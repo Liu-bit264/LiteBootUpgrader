@@ -31,15 +31,22 @@ def check(name, ok, detail=""):
 
 
 class FakeSerial:
-    """假串口：按预设块序列返回 read()，用于驱动 recv_frame。"""
+    """假串口：按预设块序列返回 read()，用于驱动 recv_frame/cmd。"""
 
     def __init__(self, chunks):
         self.chunks = list(chunks)
+        self.wrote = b""
 
     def read(self, n):
         if self.chunks:
             return self.chunks.pop(0)
         return b""
+
+    def write(self, data):
+        self.wrote += data
+
+    def flush(self):
+        pass
 
 
 def make_bl(chunks):
@@ -112,6 +119,23 @@ def t_parse_meta():
           and m["size"] == 5540 and m["crc"] == 0x7FB143E0 and m["active_copy"] == 1)
 
 
+def t_cmd_seq():
+    """review P3：SEQ 错位帧应丢弃并继续等待，而非误当本条答复。"""
+    bl = make_bl([])
+    bl.seq = 0x05                       # cmd 内自增 → 期望 SEQ=0x06
+    stale = blp.build_frame(0x81, 0x04, bytes([0x00, 0x01]))
+    good = blp.build_frame(0x81, 0x06, bytes([0x00, 0x01]))
+    bl.s = FakeSerial([stale, good])
+    r = bl.cmd("ping", timeout=0.5)
+    check("SEQ 错位帧丢弃后收到正确响应",
+          r is not None and r["seq"] == 0x06 and r["data"] == bytes([0x00, 0x01]))
+    bl = make_bl([])
+    bl.seq = 0x05
+    bl.s = FakeSerial([stale])
+    r = bl.cmd("ping", timeout=0.2)
+    check("仅有迟到帧时等到超时返回 None（交重试层）", r is None)
+
+
 def t_misc():
     import bl_upgrade_gui  # noqa: F401  GUI 模块可导入（含 Tk 依赖面）
     check("GUI 模块可导入", True)
@@ -135,6 +159,7 @@ def main():
     t_recv_frame()
     t_parse_info()
     t_parse_meta()
+    t_cmd_seq()
     t_misc()
     n = sum(RESULTS)
     print(f"== 主机侧单测：{n}/{len(RESULTS)} 通过 ==")

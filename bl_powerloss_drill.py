@@ -72,12 +72,12 @@ def one_round(bl: blp.BootLoader, idx: int, burst: int) -> bool:
 
     # 定时复位：延时后由后台线程注入，主线程继续风暴
     ev = threading.Event()
+    rst = {"failed": False}        # 线程间失败标志（review P3：不用 Event 动态属性）
     delay = SR.uniform(0.3, 0.8)   # pyocd 连接约 1.5~2.5s，复位落在风暴中段
 
     def fire():
-        ok = pyocd_reset()
-        if not ok:
-            ev.reset_failed = True   # type: ignore[attr-defined]
+        if not pyocd_reset():
+            rst["failed"] = True
         ev.set()
 
     timer = threading.Timer(delay, fire)
@@ -99,7 +99,7 @@ def one_round(bl: blp.BootLoader, idx: int, burst: int) -> bool:
             break
         n_ok += 1
     timer.join(40)
-    hit_failed = getattr(ev, "reset_failed", False)
+    hit_failed = rst["failed"]
 
     time.sleep(0.5)                # 等复位后 BL 完成启动
     m1 = get_meta(bl)

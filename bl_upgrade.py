@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""bl_upgrade.py — LiteBootLoader 上位机 v1.1.1（独立仓库 LiteBootUpgrader）
+"""bl_upgrade.py — LiteBootLoader 上位机 v1.1.2（独立仓库 LiteBootUpgrader）
 
 协议见 docs/protocol.md：
   SOF(AA 55) | VER(01) | CMD | SEQ | LEN(LE16) | DATA(0..256B) | CRC16(LE16,MODBUS) | EOF(55 AA)
@@ -82,7 +82,9 @@ class BootLoader:
         return b"upgrade mode" in self.noise or b"LiteBL" in self.noise
 
     def cmd(self, name: str, data: bytes = b"", timeout: float = 1.0):
-        """发送命令并等待响应；返回 {'cmd','seq','data'} 或 None（超时）。"""
+        """发送命令并等待响应；返回 {'cmd','seq','data'} 或 None（超时）。
+        SEQ 错位的响应视为迟到帧丢弃并继续等到 deadline（review P3），
+        由重试层兜底；全命令幂等，迟到帧被丢弃不会产生副作用。"""
         self.seq = (self.seq + 1) & 0xFF
         f = build_frame(CMD[name], self.seq, data)
         self.sent_bytes += len(f)
@@ -91,13 +93,20 @@ class BootLoader:
         self.s.flush()
         if self.pace:
             time.sleep(self.pace / 1000.0)
-        r = self.recv_frame(timeout)
-        if r is not None:
+        deadline = time.time() + timeout
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            r = self.recv_frame(remaining)
+            if r is None:
+                return None
             if r["cmd"] != (CMD[name] | 0x80):
                 raise RuntimeError(f"响应 CMD 不匹配: {r['cmd']:#04x}")
-            if r["seq"] != self.seq:
-                print(f"    [!] SEQ 错位：请求 {self.seq}，响应 {r['seq']}（疑似迟到/丢失响应）")
-        return r
+            if r["seq"] == self.seq:
+                return r
+            print(f"    [!] SEQ 错位：期望 {self.seq}，收到 {r['seq']}"
+                  f"（疑似迟到响应，丢弃继续等待）")
 
     def cmd_retry(self, name: str, data: bytes = b"", timeout: float = 1.0,
                   attempts: int = RETRY_ATTEMPTS, log=print):
@@ -409,7 +418,8 @@ def run_upgrade(bl: BootLoader, path: str, log=print, progress=None) -> int:
     """一键升级完整流程（protocol.md §7 主机侧约定的唯一实现）：
     ensure_bl → ERASE → 逐块 WRITE → VERIFY。
     progress(done, total) 在每个块成功后回调（GUI 用）；返回 0=成功。"""
-    img = open(path, "rb").read()
+    with open(path, "rb") as f:
+        img = f.read()
     if len(img) == 0 or len(img) > APP_SIZE:
         raise ValueError(f"镜像大小 {len(img)} 超出 1B~{APP_SIZE}B")
     if len(img) % 4:
@@ -450,6 +460,8 @@ def cmd_upgrade(bl: BootLoader, path: str) -> int:
         return run_upgrade(bl, path)
     except ValueError as e:
         sys.exit(f"[X] {e}")
+    except OSError as e:
+        sys.exit(f"[X] 打开镜像失败：{e}")
 
 
 def main():
@@ -457,7 +469,7 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    ap = argparse.ArgumentParser(description="LiteBootLoader 上位机 v1.1.1（LiteBootUpgrader）")
+    ap = argparse.ArgumentParser(description="LiteBootLoader 上位机 v1.1.2（LiteBootUpgrader）")
     ap.add_argument("command",
                     choices=["ping", "info", "meta", "erase", "write", "verify",
                              "upgrade", "jump", "reset", "selftest",

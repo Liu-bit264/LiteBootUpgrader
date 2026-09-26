@@ -115,6 +115,10 @@ uv run --python 3.12 --with pyserial --with pyinstaller \
 
 ## 版本历史
 
+- **1.1.2**（2026-09-26）：review 处理——`run_upgrade` 改 with 打开镜像且 `cmd_upgrade`
+  捕获 OSError（坏路径友好退出，实测验证）；`cmd()` 对 SEQ 错位帧丢弃并等到 deadline
+  （迟到响应不再误当本条答复，重试层兜底，单测+真机回归）；钻具 Event 动态属性改独立容器；
+  双 exe 重建至本版本。
 - **1.1.1**（2026-09-26）：新增主机侧单测、PyInstaller 双 exe 构建脚本；修复 GUI
   日志窗 `tk.Text.state()` 误用（那是 ttk 控件 API）导致 UI 刷新链断裂。
 - **1.1.0**（2026-09-26）：CLI 库化重构（log/progress 回调）+ tkinter GUI；
