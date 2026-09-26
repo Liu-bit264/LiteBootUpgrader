@@ -8,5 +8,8 @@ build/
 dist/
 *.spec
 
+# ---- 本地工具状态 ----
+.mimosa/
+
 # ---- 评审过程记录（本地保留，不入库） ----
 docs/review/

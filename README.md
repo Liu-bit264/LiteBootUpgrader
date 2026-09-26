@@ -11,7 +11,7 @@ LiteBootUpgrader/
 ├── bl_upgrade.py          CLI 与协议库（run_upgrade/ensure_bl/cmd_retry 支持 log/progress 回调）
 ├── bl_upgrade_gui.py      tkinter 图形界面（一键升级/跳转/复位/PING）
 ├── bl_powerloss_drill.py  验收 #9 参数区写入中断恢复钻具（依赖 bl_upgrade）
-├── test_host_protocol.py  主机侧无硬件单测（CRC/帧/解析器，13 项）
+├── test_host_protocol.py  主机侧无硬件单测（CRC/帧/解析器，15 项）
 ├── bl_upgrade_gui.bat     GUI 双击启动器（uv 隔离依赖）
 ├── build_exe.bat          Windows 可执行程序构建脚本（PyInstaller → dist/）
 ├── docs/gui.png           GUI 界面截图
@@ -80,7 +80,7 @@ uv run --python 3.12 --with pyserial bl_upgrade.py selftest --port COM4
 ## 测试
 
 ```bash
-# 主机侧单测（无需硬件，13 项：CRC KAT/帧模板/解析器/响应解析/GUI 导入）
+# 主机侧单测（无需硬件，15 项：CRC KAT/帧模板/解析器/响应解析/SEQ 错位/GUI 导入）
 uv run --python 3.12 --with pyserial python test_host_protocol.py
 
 # 硬件在环：15 步升级流程自检（板子在线时）
@@ -127,4 +127,5 @@ uv run --python 3.12 --with pyserial --with pyinstaller \
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 Qingc。主仓 LiteBootLoader 的许可证安排独立决定，与本仓互不约束。
+[MIT](LICENSE) © 2026 Qingc。主仓 LiteBootLoader 亦采用 MIT 许可证（捆绑的 third_party/CMSIS
+保留其原始许可，见其 LICENSES.md）。
