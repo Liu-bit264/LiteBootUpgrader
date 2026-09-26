@@ -136,10 +136,10 @@ class App:
             w.state(["disabled" if b else "!disabled"])
 
     def log_line(self, text: str):
-        self.log_text.state("normal")
+        self.log_text.configure(state="normal")
         self.log_text.insert("end", text.rstrip("\n") + "\n")
         self.log_text.see("end")
-        self.log_text.state("disabled")
+        self.log_text.configure(state="disabled")
 
     def pump(self):
         try:
