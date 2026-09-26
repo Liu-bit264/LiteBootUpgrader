@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""bl_upgrade.py — LiteBootLoader 上位机 v1.1.0（独立仓库 LiteBootUpgrader）
+"""bl_upgrade.py — LiteBootLoader 上位机 v1.1.1（独立仓库 LiteBootUpgrader）
 
 协议见 docs/protocol.md：
   SOF(AA 55) | VER(01) | CMD | SEQ | LEN(LE16) | DATA(0..256B) | CRC16(LE16,MODBUS) | EOF(55 AA)
@@ -457,7 +457,7 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    ap = argparse.ArgumentParser(description="LiteBootLoader 上位机 v1.1.0（LiteBootUpgrader）")
+    ap = argparse.ArgumentParser(description="LiteBootLoader 上位机 v1.1.1（LiteBootUpgrader）")
     ap.add_argument("command",
                     choices=["ping", "info", "meta", "erase", "write", "verify",
                              "upgrade", "jump", "reset", "selftest",

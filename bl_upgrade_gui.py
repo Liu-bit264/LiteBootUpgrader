@@ -26,7 +26,7 @@ from tkinter import filedialog, ttk
 
 import bl_upgrade as blp
 
-APP_TITLE = "LiteBootLoader 升级工具 v1.1.0"
+APP_TITLE = "LiteBootLoader 升级工具 v1.1.1"
 DEFAULT_BAUD = 115200
 FOLLOW = {"jump": 2.5, "reset": 6.0, "ping": 0.3}
 # 邻居主仓的示例镜像（存在则预填，纯便利不考虑强依赖）

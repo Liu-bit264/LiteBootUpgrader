@@ -2,3 +2,8 @@
 __pycache__/
 *.py[cod]
 .venv/
+
+# ---- PyInstaller 构建产物（dist/ 不入库，见 build_exe.bat） ----
+build/
+dist/
+*.spec
