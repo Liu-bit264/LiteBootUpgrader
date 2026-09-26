@@ -54,7 +54,7 @@ class App:
         self.port_cb.pack(side="left", padx=6, pady=6)
         ttk.Button(top, text="刷新", command=self.refresh_ports)\
             .pack(side="left", padx=2)
-        ttk.Label(top, text="串口与 VOFA+/串口助手互斥：使用前请关闭它们")\
+        ttk.Label(top, text="串口与 VOFA+/串口助手互斥")\
             .pack(side="left", padx=12)
 
         img = ttk.LabelFrame(root, text="APP 镜像（.bin，≤46 KiB，自动补齐 4 字节对齐）")
@@ -77,7 +77,7 @@ class App:
         for i, b in enumerate((self.btn_upgrade, self.btn_jump,
                                self.btn_reset, self.btn_ping)):
             b.pack(side="left", padx=6, pady=6)
-        ttk.Label(ops, text="升级含自动“请求回 BL”：对端在跑 APP 也会自动回 BL 再升")\
+        ttk.Label(ops, text="对端在跑 APP 会自动请求回 BL")\
             .pack(side="left", padx=12)
 
         self.progress = ttk.Progressbar(root, maximum=100)
