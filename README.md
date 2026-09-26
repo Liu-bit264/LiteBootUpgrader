@@ -15,6 +15,7 @@ LiteBootUpgrader/
 ├── bl_upgrade_gui.bat     GUI 双击启动器（uv 隔离依赖）
 ├── build_exe.bat          Windows 可执行程序构建脚本（PyInstaller → dist/）
 ├── docs/gui.png           GUI 界面截图
+├── LICENSE                MIT 许可证
 └── dist/                  构建产物（不入库，见 .gitignore）
 ```
 
@@ -119,3 +120,7 @@ uv run --python 3.12 --with pyserial --with pyinstaller \
 - **1.1.0**（2026-09-26）：CLI 库化重构（log/progress 回调）+ tkinter GUI；
   自主仓 LiteBootLoader 迁出独立建仓。
 - **≤1.0.0**：见主仓 git 历史（tools/python/）。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 Qingc。主仓 LiteBootLoader 的许可证安排独立决定，与本仓互不约束。
