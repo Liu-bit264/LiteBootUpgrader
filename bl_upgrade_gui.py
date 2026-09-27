@@ -26,7 +26,7 @@ from tkinter import filedialog, ttk
 
 import bl_upgrade as blp
 
-APP_TITLE = "LiteBootLoader 升级工具 v1.1.2"
+APP_TITLE = "LiteBootLoader 升级工具 v1.1.3"
 DEFAULT_BAUD = 115200
 FOLLOW = {"jump": 2.5, "reset": 6.0, "ping": 0.3}
 # 邻居主仓的示例镜像（存在则预填，纯便利不考虑强依赖）
@@ -223,7 +223,9 @@ class App:
             finally:
                 bl.s.close()
             self.q.put(("done", rc))
-        except Exception as e:      # 串口打开失败等
+        except (Exception, SystemExit) as e:
+            # SystemExit：BootLoader 打开串口失败走 sys.exit（review 2026-09-27 P2——
+            # 它继承 BaseException，不捕获会让线程静默终止、UI 卡"运行中"）
             self._logcb(f"[X] {e}")
             self.q.put(("done", 1))
 
@@ -236,6 +238,8 @@ class App:
                     self._logcb(f"{op}: 无响应（对端可能在跑 APP？PING 先探一下）")
                     self.q.put(("done", 1))
                     return
+                if not r["data"]:
+                    raise RuntimeError(f"{op} 响应 DATA 为空（对端异常）")
                 st = r["data"][0]
                 extra = ""
                 if op == "ping" and st == 0:
@@ -249,7 +253,7 @@ class App:
                 self.q.put(("done", 0))
             finally:
                 bl.s.close()
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             self._logcb(f"[X] {e}")
             self.q.put(("done", 1))
 

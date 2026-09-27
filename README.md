@@ -11,7 +11,7 @@ LiteBootUpgrader/
 ├── bl_upgrade.py          CLI 与协议库（run_upgrade/ensure_bl/cmd_retry 支持 log/progress 回调）
 ├── bl_upgrade_gui.py      tkinter 图形界面（一键升级/跳转/复位/PING）
 ├── bl_powerloss_drill.py  验收 #9 参数区写入中断恢复钻具（依赖 bl_upgrade）
-├── test_host_protocol.py  主机侧无硬件单测（CRC/帧/解析器，15 项）
+├── test_host_protocol.py  主机侧无硬件单测（CRC/帧/解析器，19 项）
 ├── bl_upgrade_gui.bat     GUI 双击启动器（uv 隔离依赖）
 ├── build_exe.bat          Windows 可执行程序构建脚本（PyInstaller → dist/）
 ├── docs/gui.png           GUI 界面截图
@@ -80,7 +80,7 @@ uv run --python 3.12 --with pyserial bl_upgrade.py selftest --port COM4
 ## 测试
 
 ```bash
-# 主机侧单测（无需硬件，15 项：CRC KAT/帧模板/解析器/响应解析/SEQ 错位/GUI 导入）
+# 主机侧单测（无需硬件，19 项：CRC KAT/帧模板/解析器/响应解析/SEQ 与 CMD 错位丢弃/GUI 导入）
 uv run --python 3.12 --with pyserial python test_host_protocol.py
 
 # 硬件在环：15 步升级流程自检（板子在线时）
@@ -115,6 +115,10 @@ uv run --python 3.12 --with pyserial --with pyinstaller \
 
 ## 版本历史
 
+- **1.1.3**（2026-09-27）：review 处理——GUI 工作线程捕获 `SystemExit`（串口占用时
+  界面不再卡"运行中"）；`cmd()` 对 CMD 不匹配帧与 SEQ 错位同样丢弃续等；响应 DATA
+  最小长度防御（parse_meta/verify/状态字节，友好退出替代栈回溯）；`build_frame`
+  拒绝超长 DATA；单测扩至 19 项。
 - **1.1.2**（2026-09-26）：review 处理——`run_upgrade` 改 with 打开镜像且 `cmd_upgrade`
   捕获 OSError（坏路径友好退出，实测验证）；`cmd()` 对 SEQ 错位帧丢弃并等到 deadline
   （迟到响应不再误当本条答复，重试层兜底，单测+真机回归）；钻具 Event 动态属性改独立容器；

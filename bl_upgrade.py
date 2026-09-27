@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""bl_upgrade.py — LiteBootLoader 上位机 v1.1.2（独立仓库 LiteBootUpgrader）
+"""bl_upgrade.py — LiteBootLoader 上位机 v1.1.3（独立仓库 LiteBootUpgrader）
 
 协议见 docs/protocol.md：
   SOF(AA 55) | VER(01) | CMD | SEQ | LEN(LE16) | DATA(0..256B) | CRC16(LE16,MODBUS) | EOF(55 AA)
@@ -52,6 +52,10 @@ def crc16_modbus(data: bytes) -> int:
 
 
 def build_frame(cmd: int, seq: int, data: bytes = b"") -> bytes:
+    if len(data) > 256:
+        # LEN 字段只有 2 B 且协议上限 256：超长会生成 LEN 与实际不符的帧
+        # （review 2026-09-27 P3）
+        raise ValueError(f"DATA 超长：{len(data)}B > 协议上限 256B（protocol.md §4）")
     head = bytes([VER, cmd, seq, len(data) & 0xFF, (len(data) >> 8) & 0xFF])
     c = crc16_modbus(head + data)
     return SOF + head + data + bytes([c & 0xFF, (c >> 8) & 0xFF]) + EOF
@@ -59,6 +63,16 @@ def build_frame(cmd: int, seq: int, data: bytes = b"") -> bytes:
 
 def st_name(st: int) -> str:
     return STATUS.get(st, f"0x{st:02X}")
+
+
+def _resp_status(r, what: str):
+    """安全取响应状态字节：无响应返回 None，DATA 过短抛 RuntimeError（对端异常，
+    review 2026-09-27 P2——畸形短响应不再以 IndexError 栈回溯退出）。"""
+    if r is None:
+        return None
+    if len(r["data"]) < 1:
+        raise RuntimeError(f"{what} 响应 DATA 为空（对端异常）")
+    return r["data"][0]
 
 
 class BootLoader:
@@ -83,8 +97,9 @@ class BootLoader:
 
     def cmd(self, name: str, data: bytes = b"", timeout: float = 1.0):
         """发送命令并等待响应；返回 {'cmd','seq','data'} 或 None（超时）。
-        SEQ 错位的响应视为迟到帧丢弃并继续等到 deadline（review P3），
-        由重试层兜底；全命令幂等，迟到帧被丢弃不会产生副作用。"""
+        SEQ 错位与 CMD 不匹配的帧均视为异己帧丢弃并继续等到 deadline
+        （review 2026-09-27 P2：迟到/错配响应不再中断流程），由重试层兜底；
+        全命令幂等，丢弃不会产生副作用。"""
         self.seq = (self.seq + 1) & 0xFF
         f = build_frame(CMD[name], self.seq, data)
         self.sent_bytes += len(f)
@@ -102,7 +117,9 @@ class BootLoader:
             if r is None:
                 return None
             if r["cmd"] != (CMD[name] | 0x80):
-                raise RuntimeError(f"响应 CMD 不匹配: {r['cmd']:#04x}")
+                print(f"    [!] CMD 错位：期望 {CMD[name] | 0x80:#04x}，"
+                      f"收到 {r['cmd']:#04x}（丢弃继续等待）")
+                continue
             if r["seq"] == self.seq:
                 return r
             print(f"    [!] SEQ 错位：期望 {self.seq}，收到 {r['seq']}"
@@ -195,6 +212,9 @@ def parse_info(d: bytes) -> str:
 
 def parse_meta(d: bytes) -> dict:
     """GET_META 响应 21B：status + seq(4) + flags(4) + ver(3) + size(4) + crc(4) + copy(1)"""
+    if len(d) < 21:
+        # 畸形短响应防御（review 2026-09-27 P2），与 parse_info 的短响应保护同类
+        raise RuntimeError(f"GET_META 响应 DATA 过短：{len(d)}B < 21B（对端异常）")
     seq, flags = struct.unpack_from("<II", d, 1)
     ver = (d[9], d[10], d[11])
     size, crc = struct.unpack_from("<II", d, 12)
@@ -213,6 +233,9 @@ def verify_probe(bl: BootLoader, size: int, want_crc: int):
     r = bl.cmd("verify", struct.pack("<II", size, want_crc), timeout=3.0)
     if r is None:
         return None, None, None
+    if len(r["data"]) < 9:
+        # status + calc_crc32 + calc_size 最少 9B（review 2026-09-27 P2）
+        raise RuntimeError(f"verify 响应 DATA 过短：{len(r['data'])}B < 9B（对端异常）")
     st = r["data"][0]
     calc, csize = struct.unpack_from("<II", r["data"], 1)
     return st, calc, csize
@@ -392,14 +415,15 @@ def ensure_bl(bl: BootLoader, log=print) -> bool:
     for attempt in range(RETRY_ATTEMPTS):
         r = bl.cmd("info", timeout=T_DEFAULT)
         if r is not None:
-            st = r["data"][0]
+            st = _resp_status(r, "GET_INFO")
             if st == 0x00:
                 log("对端 = BL ✓")
                 return True
             if st == 0x03:      # APP 响应器只认 PING/SET_META，其余回 RANGE_ERROR
                 log("对端 = APP，发送 bl_request 请求回 BL…")
                 r2 = bl.cmd("set_meta", bytes([0x01, 0x01]), timeout=T_DEFAULT)
-                log("APP 已确认请求" if (r2 is not None and r2["data"][0] == 0)
+                r2st = _resp_status(r2, "SET_META")
+                log("APP 已确认请求" if r2st == 0
                     else "APP 未按预期确认（继续等待复位）")
                 log("等待复位进入 BL（1.6s）…")
                 time.sleep(1.6)
@@ -432,26 +456,32 @@ def run_upgrade(bl: BootLoader, path: str, log=print, progress=None) -> int:
 
     log("擦除 APP 区…")
     r = bl.cmd_retry("erase", timeout=T_ERASE, log=log)
-    log("erase:", st_name(r["data"][0]) if r else "无响应（重试耗尽）")
-    if not r or r["data"][0]:
+    st = _resp_status(r, "erase")
+    log("erase:", st_name(st) if st is not None else "无响应（重试耗尽）")
+    if st is None or st:
         return 1
     total = len(img)
     for off in range(0, total, CHUNK_PAYLOAD):
         r = bl.cmd_retry("write", struct.pack("<I", off) + img[off:off + CHUNK_PAYLOAD],
                          timeout=2.0, log=log)
-        if not r or r["data"][0]:
+        st = _resp_status(r, "write")
+        if st is None or st:
             log(f"write @{off} 失败: "
-                f"{st_name(r['data'][0]) if r else '无响应（重试耗尽）'}")
+                f"{st_name(st) if st is not None else '无响应（重试耗尽）'}")
             return 1
         if progress:
             progress(min(off + CHUNK_PAYLOAD, total), total)
     log("校验…")
     r = bl.cmd_retry("verify", struct.pack("<II", total, crc), timeout=T_VERIFY, log=log)
-    if r and r["data"][0] == 0:
+    st = _resp_status(r, "verify")
+    if st == 0:
+        if len(r["data"]) < 9:
+            # status + calc_crc32 + calc_size 最少 9B（review 2026-09-27 P2）
+            raise RuntimeError(f"verify 响应 DATA 过短：{len(r['data'])}B < 9B（对端异常）")
         calc, csize = struct.unpack_from("<II", r["data"], 1)
         log(f"verify: OK crc={calc:#010x} size={csize} —— APP 就绪，可 jump")
         return 0
-    log("verify 失败:", st_name(r["data"][0]) if r else "无响应（重试耗尽）")
+    log("verify 失败:", st_name(st) if st is not None else "无响应（重试耗尽）")
     return 1
 
 
@@ -460,6 +490,8 @@ def cmd_upgrade(bl: BootLoader, path: str) -> int:
         return run_upgrade(bl, path)
     except ValueError as e:
         sys.exit(f"[X] {e}")
+    except RuntimeError as e:
+        sys.exit(f"[X] {e}")     # 对端异常响应的友好退出（review 2026-09-27 P2）
     except OSError as e:
         sys.exit(f"[X] 打开镜像失败：{e}")
 
@@ -469,7 +501,7 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    ap = argparse.ArgumentParser(description="LiteBootLoader 上位机 v1.1.2（LiteBootUpgrader）")
+    ap = argparse.ArgumentParser(description="LiteBootLoader 上位机 v1.1.3（LiteBootUpgrader）")
     ap.add_argument("command",
                     choices=["ping", "info", "meta", "erase", "write", "verify",
                              "upgrade", "jump", "reset", "selftest",

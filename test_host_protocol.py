@@ -73,6 +73,12 @@ def t_build_frame():
     f2 = blp.build_frame(0x06, 0x01, bytes([0x01, 0x01]))
     check("SET_META(01,01) 帧与模板一致",
           f2 == bytes.fromhex("AA5501060102000101F78E55AA"))
+    # review 2026-09-27 P3：超长 DATA 拒绝（LEN 只有 2B，静默截断会生成不一致帧）
+    try:
+        blp.build_frame(0x01, 0x01, b"\x00" * 257)
+        check("build_frame 超长 DATA 拒绝", False, "未抛出")
+    except ValueError:
+        check("build_frame 超长 DATA 拒绝", True)
 
 
 def t_recv_frame():
@@ -117,10 +123,16 @@ def t_parse_meta():
     check("parse_meta 字段往返",
           m["seq"] == 175 and m["flags"] == 1 and m["ver"] == (0, 1, 0)
           and m["size"] == 5540 and m["crc"] == 0x7FB143E0 and m["active_copy"] == 1)
+    # review 2026-09-27 P2：畸形短响应防御（RuntimeError 而非 struct.error 栈回溯）
+    try:
+        blp.parse_meta(b"\x00\x01")
+        check("parse_meta 短响应防御", False, "未抛出")
+    except RuntimeError:
+        check("parse_meta 短响应防御", True)
 
 
 def t_cmd_seq():
-    """review P3：SEQ 错位帧应丢弃并继续等待，而非误当本条答复。"""
+    """review P3 + 2026-09-27 P2：SEQ 错位与 CMD 不匹配帧均应丢弃并继续等待。"""
     bl = make_bl([])
     bl.seq = 0x05                       # cmd 内自增 → 期望 SEQ=0x06
     stale = blp.build_frame(0x81, 0x04, bytes([0x00, 0x01]))
@@ -134,6 +146,18 @@ def t_cmd_seq():
     bl.s = FakeSerial([stale])
     r = bl.cmd("ping", timeout=0.2)
     check("仅有迟到帧时等到超时返回 None（交重试层）", r is None)
+    # review 2026-09-27 P2：CMD 不匹配（如对端切换/异己应答）同样丢弃续等
+    wrong_cmd = blp.build_frame(0x84, 0x06, bytes([0x00]))   # 期望 0x81，来的是 0x84
+    bl = make_bl([])
+    bl.seq = 0x05
+    bl.s = FakeSerial([wrong_cmd, good])
+    r = bl.cmd("ping", timeout=0.5)
+    check("CMD 错位帧丢弃后收到正确响应", r is not None and r["seq"] == 0x06)
+    bl = make_bl([])
+    bl.seq = 0x05
+    bl.s = FakeSerial([wrong_cmd])
+    r = bl.cmd("ping", timeout=0.2)
+    check("仅有 CMD 错位帧时等到超时返回 None（交重试层）", r is None)
 
 
 def t_misc():
