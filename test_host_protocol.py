@@ -14,6 +14,8 @@
   4. parse_info 各长度档（67B 全量 + 1B 短响应）
   5. parse_meta 字段往返
   6. 镜像 4 字节补齐后的 CRC 与 GUI 信息栏口径一致 + GUI 模块可导入
+  7. CLI 解析器：write 幽灵子命令已移除、--version 可用
+  8. GUI 模式状态持久化（缺失/回读/损坏容错；用系统临时目录，自动清理）
 退出码 0=全部通过。
 """
 import struct
@@ -173,6 +175,51 @@ def t_misc():
                                         "set_meta", "get_meta", "jump", "reset"})
 
 
+def t_cli():
+    import contextlib
+    import io
+    ap = blp.build_parser()
+    try:
+        ns = ap.parse_args(["upgrade", "x.bin"])
+        ok = ns.command == "upgrade"
+    except SystemExit:
+        ok = False
+    check("CLI upgrade 子命令可解析", ok)
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            ap.parse_args(["write"])
+        ok = False
+    except SystemExit as e:
+        ok = e.code == 2
+    check("CLI 无 write 幽灵子命令（无实现分支，upgrade 内部自走分块写）", ok)
+    buf = io.StringIO()
+    ok = False
+    try:
+        with contextlib.redirect_stdout(buf):
+            ap.parse_args(["--version"])
+    except SystemExit as e:
+        ok = e.code in (0, None)
+    check("CLI --version 输出版本号", ok and blp.VERSION in buf.getvalue())
+
+
+def t_gui_state():
+    """GUI 高级模式状态持久化（1.2.0）：缺失/回读/损坏均不得抛异常。"""
+    import os
+    import tempfile
+    from pathlib import Path
+
+    import bl_upgrade_gui as gui
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "state.json")
+        check("GUI 状态缺失回落基础模式", gui.read_state(p) == {})
+        check("GUI 状态写入回读 advanced=true",
+              gui.write_state({"advanced": True}, p)
+              and gui.read_state(p).get("advanced") is True)
+        bad = os.path.join(td, "bad.json")
+        Path(bad).write_text("not-json{{", encoding="utf-8")
+        check("GUI 状态损坏回落基础模式", gui.read_state(bad) == {})
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -185,6 +232,8 @@ def main():
     t_parse_meta()
     t_cmd_seq()
     t_misc()
+    t_cli()
+    t_gui_state()
     n = sum(RESULTS)
     print(f"== 主机侧单测：{n}/{len(RESULTS)} 通过 ==")
     return 0 if all(RESULTS) else 1

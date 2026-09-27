@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""bl_upgrade.py — LiteBootLoader 上位机 v1.1.3（独立仓库 LiteBootUpgrader）
+"""bl_upgrade.py — LiteBootLoader 上位机 v1.2.0（独立仓库 LiteBootUpgrader）
 
 协议见 docs/protocol.md：
   SOF(AA 55) | VER(01) | CMD | SEQ | LEN(LE16) | DATA(0..256B) | CRC16(LE16,MODBUS) | EOF(55 AA)
@@ -11,7 +11,7 @@ CRC 覆盖 VER..DATA；响应 CMD = 请求 CMD|0x80，DATA[0] = 状态码。
 upgrade 会自动识别对端：若 APP 正在运行，先走"请求回 BL"流程（SET_META bl_request）
 再升级——从任意状态一条命令完成升级。
 
-依赖隔离（AGENTS.md §3 环境约定，勿直接 pip install）：
+依赖隔离（建议隔离运行，勿直接 pip install 到全局）：
   uv run --python 3.12 --with pyserial bl_upgrade.py selftest --port COM4
 """
 import argparse
@@ -40,6 +40,8 @@ CHUNK_PAYLOAD = 252        # DATA ≤ 256B，WRITE_CHUNK 头占 4B
 RETRY_ATTEMPTS = 3
 RETRY_DELAY = 2.2
 T_DEFAULT, T_ERASE, T_VERIFY = 1.0, 5.0, 5.0
+
+VERSION = "1.2.0"          # LiteBootUpgrader 版本（--version 与 description 共用）
 
 
 def crc16_modbus(data: bytes) -> int:
@@ -496,23 +498,29 @@ def cmd_upgrade(bl: BootLoader, path: str) -> int:
         sys.exit(f"[X] 打开镜像失败：{e}")
 
 
-def main():
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
-    ap = argparse.ArgumentParser(description="LiteBootLoader 上位机 v1.1.3（LiteBootUpgrader）")
+def build_parser():
+    ap = argparse.ArgumentParser(description=f"LiteBootLoader 上位机 v{VERSION}（LiteBootUpgrader）")
     ap.add_argument("command",
-                    choices=["ping", "info", "meta", "erase", "write", "verify",
+                    choices=["ping", "info", "meta", "erase", "verify",
                              "upgrade", "jump", "reset", "selftest",
                              "listen", "raw", "setmeta"])
-    ap.add_argument("arg", nargs="?", help="write/upgrade: 镜像文件；verify: size")
+    ap.add_argument("arg", nargs="?", help="upgrade: 镜像文件；verify: size")
     ap.add_argument("arg2", nargs="?", help="verify: crc32 十六进制")
     ap.add_argument("--port", default="COM4")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--pace", type=int, default=0,
                     help="命令间插入延时（ms），用于时序假设验证")
-    a = ap.parse_args()
+    ap.add_argument("--version", action="version",
+                    version=f"LiteBootUpgrader v{VERSION}")
+    return ap
+
+
+def main():
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    a = build_parser().parse_args()
 
     if a.command == "selftest":
         sys.exit(selftest(BootLoader(a.port, a.baud, a.pace)))
