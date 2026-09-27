@@ -338,36 +338,37 @@ def selftest(bl: BootLoader) -> int:
                  f"status={st_name(st)} calc_crc={calc:#010x}（zlib 期望={want:#010x}）"
                  f" calc_size={csize}")
 
-    # 4. 最小写入：4B @0（上一轮 252B@0 无响应，先最小化复现）
+    # 4. 最小写入：8B @0（8B = 固件 VERIFY 下界 protocol.md §5.5，1ba8416 加固：
+    #    size<8 拒绝——原 4B 版本是对旧契约的滞后，2026-09-27 真机 14/15 实锤后对齐）
     pat = bytes((i * 7 + 0x5A) & 0xFF for i in range(512))
     bl.noise = b""
     t0 = time.time()
-    r = bl.cmd("write", struct.pack("<I", 0) + pat[0:4], timeout=5.0)
+    r = bl.cmd("write", struct.pack("<I", 0) + pat[0:8], timeout=5.0)
     if r is None:
         verdict = "无响应（5s）"
         verdict += "；检测到启动横幅 → 芯片发生复位（IWDG？）" if bl.saw_reboot_banner() else "；未见启动横幅"
-        step("WRITE 4B @0", False, verdict + " —— 探测芯片活性…")
+        step("WRITE 8B @0", False, verdict + " —— 探测芯片活性…")
         r2 = bl.cmd("ping", timeout=2.0)
         step("WRITE 后活性探测", r2 is not None,
              "芯片存活" if r2 is not None else "芯片仍无响应")
     else:
-        step("WRITE 4B @0", r["data"][0] == 0,
+        step("WRITE 8B @0", r["data"][0] == 0,
              f"status={st_name(r['data'][0])} 耗时={time.time() - t0:.2f}s")
 
-    # 5. 回读 4B：区分「写入失败」与「读回失真」
-    want4 = zlib.crc32(pat[0:4]) & 0xFFFFFFFF
-    ff4 = zlib.crc32(b"\xFF" * 4) & 0xFFFFFFFF
-    st, calc, csize = verify_probe(bl, 4, want4)
+    # 5. 回读 8B：区分「写入失败」与「读回失真」
+    want8 = zlib.crc32(pat[0:8]) & 0xFFFFFFFF
+    ff8 = zlib.crc32(b"\xFF" * 8) & 0xFFFFFFFF
+    st, calc, csize = verify_probe(bl, 8, want8)
     if st is None:
-        step("VERIFY 4B 回读", False, "无响应")
+        step("VERIFY 8B 回读", False, "无响应")
     else:
-        hint = "内容=图案 ✓" if calc == want4 else (
-            f"内容≠图案（若={ff4:#010x} 则仍为全FF）")
-        step("VERIFY 4B 回读", st == 0 and calc == want4,
-             f"status={st_name(st)} calc_crc={calc:#010x}（图案={want4:#010x}）—— {hint}")
+        hint = "内容=图案 ✓" if calc == want8 else (
+            f"内容≠图案（若={ff8:#010x} 则仍为全FF）")
+        step("VERIFY 8B 回读", st == 0 and calc == want8,
+             f"status={st_name(st)} calc_crc={calc:#010x}（图案={want8:#010x}）—— {hint}")
 
-    # 6. 其余 508B 分块写入
-    for off, payload in ((4, pat[4:252]), (252, pat[252:504]), (504, pat[504:512])):
+    # 6. 其余 504B 分块写入（与首块 8B 互不重叠——同址重编程会 PGERR）
+    for off, payload in ((8, pat[8:252]), (252, pat[252:504]), (504, pat[504:512])):
         bl.noise = b""
         t0 = time.time()
         r = bl.cmd("write", struct.pack("<I", off) + payload, timeout=5.0)
