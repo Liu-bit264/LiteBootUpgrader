@@ -14,8 +14,9 @@
   4. parse_info 各长度档（67B 全量 + 1B 短响应）
   5. parse_meta 字段往返
   6. 镜像 4 字节补齐后的 CRC 与 GUI 信息栏口径一致 + GUI 模块可导入
-  7. CLI 解析器：write 幽灵子命令已移除、--version 可用
+  7. CLI 解析器：write 幽灵子命令已移除、--version 可用、ota 子命令与 --conn 校验
   8. GUI 模式状态持久化（缺失/回读/损坏容错；用系统临时目录，自动清理）
+  9. parse_ota 与 OTA_QUERY 请求帧实测模板（1.3.0，protocol.md §5.10/§7.5）
 退出码 0=全部通过。
 """
 import struct
@@ -172,7 +173,29 @@ def t_misc():
     check("4B 补齐 CRC 口径一致",
           zlib.crc32(img) & 0xFFFFFFFF == zlib.crc32(b"\x01\x02\x03\xFF") & 0xFFFFFFFF)
     check("命令表齐全", set(blp.CMD) == {"ping", "info", "erase", "write", "verify",
-                                        "set_meta", "get_meta", "jump", "reset"})
+                                        "set_meta", "get_meta", "jump", "reset",
+                                        "ota"})
+
+
+def t_parse_ota():
+    """0.2.0/1.3.0：OTA_QUERY(0x10) 响应解析 + 请求帧实测模板（protocol.md §5.10/§7.5）。"""
+    # 22B 全量：status + BL/APP 版本(3+3) + valid + size/crc/seq + 通道 + BT
+    d = (b"\x00" + bytes([0, 2, 0]) + bytes([1, 0, 0]) + b"\x01" +
+         struct.pack("<III", 47104, 0x7FB143E0, 3) + b"\x01" + b"\x01")
+    assert len(d) == 22
+    s = blp.parse_ota(d)
+    check("parse_ota 22B 全量", "v0.2.0" in s and "v1.0.0" in s and "有效" in s
+          and "蓝牙 UART2" in s and "已连接" in s, s.replace("\n", " | "))
+    check("parse_ota 非 OK 状态直显", "CRC_ERROR" in blp.parse_ota(b"\x01"))
+    check("parse_ota 空响应防御", "空响应" in blp.parse_ota(b""))
+    try:
+        blp.parse_ota(b"\x00\x01")
+        check("parse_ota 短响应防御", False, "未抛出")
+    except RuntimeError:
+        check("parse_ota 短响应防御", True)
+    f = blp.build_frame(0x10, 0x01)
+    check("OTA_QUERY 帧与 §7.5 实测模板一致",
+          f == bytes.fromhex("AA5501100100004CC055AA"), f.hex().upper())
 
 
 def t_cli():
@@ -200,6 +223,19 @@ def t_cli():
     except SystemExit as e:
         ok = e.code in (0, None)
     check("CLI --version 输出版本号", ok and blp.VERSION in buf.getvalue())
+    try:
+        ns = ap.parse_args(["ota", "--conn", "bt"])
+        ok = ns.command == "ota" and ns.conn == "bt"
+    except SystemExit:
+        ok = False
+    check("CLI ota 子命令与 --conn bt 可解析", ok)
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            ap.parse_args(["ping", "--conn", "wifi"])
+        ok = False
+    except SystemExit as e:
+        ok = e.code == 2
+    check("CLI --conn 非法取值拒绝", ok)
 
 
 def t_gui_state():
@@ -230,6 +266,7 @@ def main():
     t_recv_frame()
     t_parse_info()
     t_parse_meta()
+    t_parse_ota()
     t_cmd_seq()
     t_misc()
     t_cli()
