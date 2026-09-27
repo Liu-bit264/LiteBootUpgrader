@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""bl_upgrade.py — LiteBootLoader 上位机 v1.2.0（独立仓库 LiteBootUpgrader）
+"""bl_upgrade.py — LiteBootLoader 上位机 v1.3.0（独立仓库 LiteBootUpgrader）
 
 协议见 docs/protocol.md：
   SOF(AA 55) | VER(01) | CMD | SEQ | LEN(LE16) | DATA(0..256B) | CRC16(LE16,MODBUS) | EOF(55 AA)
 CRC 覆盖 VER..DATA；响应 CMD = 请求 CMD|0x80，DATA[0] = 状态码。
+连接类型：--conn serial（有线串口，默认）| bt（蓝牙 SPP/HC-05，打开失败自动重试）；
+模块需一次性 AT 配置数据模式到 115200（主仓 docs/dev/bluetooth_notes.md §5）。
 
 主机侧重试约定（protocol.md §7）：单命令响应超时 1000 ms（ERASE/VERIFY 5000 ms），
 超时后重发至多 3 次，重试间隔 ≥2.1 s（等待 BL 帧内 2000 ms 超时复位解析器）。
@@ -30,7 +32,7 @@ EOF = b"\x55\xAA"
 VER = 0x01
 CMD = {"ping": 0x01, "info": 0x02, "erase": 0x03, "write": 0x04,
        "verify": 0x05, "set_meta": 0x06, "get_meta": 0x07,
-       "jump": 0x08, "reset": 0x09}
+       "jump": 0x08, "reset": 0x09, "ota": 0x10}
 STATUS = {0x00: "OK", 0x01: "CRC_ERROR", 0x02: "FLASH_ERROR",
           0x03: "RANGE_ERROR", 0x04: "STATE_ERROR", 0x05: "TIMEOUT"}
 APP_SIZE = 0xB800          # 46 KiB（board_config.h BL_APP_SIZE）
@@ -41,7 +43,7 @@ RETRY_ATTEMPTS = 3
 RETRY_DELAY = 2.2
 T_DEFAULT, T_ERASE, T_VERIFY = 1.0, 5.0, 5.0
 
-VERSION = "1.2.0"          # LiteBootUpgrader 版本（--version 与 description 共用）
+VERSION = "1.3.0"          # LiteBootUpgrader 版本（--version 与 description 共用）
 
 
 def crc16_modbus(data: bytes) -> int:
@@ -77,12 +79,27 @@ def _resp_status(r, what: str):
     return r["data"][0]
 
 
+OPEN_ATTEMPTS_BT = 3       # 蓝牙 SPP 打开重试次数（重连竞态窗口）
+OPEN_RETRY_DELAY = 0.5     # 蓝牙打开重试间隔（秒）
+
+
 class BootLoader:
-    def __init__(self, port: str, baud: int = 115200, pace_ms: int = 0):
-        try:
-            self.s = serial.Serial(port, baud, timeout=0.05, write_timeout=2.0)
-        except serial.SerialException as e:
-            sys.exit(f"[X] 打开 {port} 失败：{e}（若 UartAssist 等已占用串口请先关闭）")
+    def __init__(self, port: str, baud: int = 115200, pace_ms: int = 0,
+                 conn: str = "serial"):
+        # conn="bt"：蓝牙 SPP 偶发打开失败（重连竞态），带重试；有线保持原行为
+        last = None
+        self.s = None
+        for _ in range(OPEN_ATTEMPTS_BT if conn == "bt" else 1):
+            try:
+                self.s = serial.Serial(port, baud, timeout=0.05, write_timeout=2.0)
+                break
+            except serial.SerialException as e:
+                last = e
+                if conn == "bt":
+                    time.sleep(OPEN_RETRY_DELAY)
+        if self.s is None:
+            sys.exit(f"[X] 打开 {port} 失败：{last}（若 UartAssist 等已占用串口请先关闭；"
+                     "蓝牙模式请确认模块上电且已配对，重试仍失败可重插模块）")
         self.buf = b""
         self.seq = 0
         self.noise = b""          # 无法成帧的字节（日志/心跳/重启横幅）
@@ -230,6 +247,28 @@ def meta_str(m: dict) -> str:
             f"size={m['size']} crc={m['crc']:#010x} copy={m['active_copy']}")
 
 
+OTA_CHAN = {0: "有线 USART1", 1: "蓝牙 UART2"}
+
+
+def parse_ota(d: bytes) -> str:
+    """OTA_QUERY(0x10) 响应 DATA → 人读文本（protocol.md §5.10：22B 全量，status 首字节）。"""
+    if len(d) < 1:
+        return "ota: 空响应（对端异常）"
+    if d[0] != 0x00:
+        return f"ota: {st_name(d[0])}"
+    if len(d) < 22:
+        raise RuntimeError(f"OTA_QUERY 响应 DATA 过短：{len(d)}B < 22B（对端异常）")
+    (_, b0, b1, b2, a0, a1, a2, valid, size, crc, seq, chan, bt) = struct.unpack(
+        "<B3B3BBIIIBB", d[:22])
+    return "\n".join((
+        f"BL  v{b0}.{b1}.{b2}",
+        f"APP v{a0}.{a1}.{a2}"
+        f"（{'有效' if valid else '无效/无 APP'} size={size} crc={crc:#010x}）",
+        f"meta_seq={seq} 通道={OTA_CHAN.get(chan, hex(chan))}"
+        f" 蓝牙={'已连接' if bt else '未连接'}",
+    ))
+
+
 def verify_probe(bl: BootLoader, size: int, want_crc: int):
     """发送 VERIFY 并返回 (status, calc_crc, calc_size)。"""
     r = bl.cmd("verify", struct.pack("<II", size, want_crc), timeout=3.0)
@@ -299,36 +338,37 @@ def selftest(bl: BootLoader) -> int:
                  f"status={st_name(st)} calc_crc={calc:#010x}（zlib 期望={want:#010x}）"
                  f" calc_size={csize}")
 
-    # 4. 最小写入：4B @0（上一轮 252B@0 无响应，先最小化复现）
+    # 4. 最小写入：8B @0（8B = 固件 VERIFY 下界 protocol.md §5.5，1ba8416 加固：
+    #    size<8 拒绝——原 4B 版本是对旧契约的滞后，2026-09-27 真机 14/15 实锤后对齐）
     pat = bytes((i * 7 + 0x5A) & 0xFF for i in range(512))
     bl.noise = b""
     t0 = time.time()
-    r = bl.cmd("write", struct.pack("<I", 0) + pat[0:4], timeout=5.0)
+    r = bl.cmd("write", struct.pack("<I", 0) + pat[0:8], timeout=5.0)
     if r is None:
         verdict = "无响应（5s）"
         verdict += "；检测到启动横幅 → 芯片发生复位（IWDG？）" if bl.saw_reboot_banner() else "；未见启动横幅"
-        step("WRITE 4B @0", False, verdict + " —— 探测芯片活性…")
+        step("WRITE 8B @0", False, verdict + " —— 探测芯片活性…")
         r2 = bl.cmd("ping", timeout=2.0)
         step("WRITE 后活性探测", r2 is not None,
              "芯片存活" if r2 is not None else "芯片仍无响应")
     else:
-        step("WRITE 4B @0", r["data"][0] == 0,
+        step("WRITE 8B @0", r["data"][0] == 0,
              f"status={st_name(r['data'][0])} 耗时={time.time() - t0:.2f}s")
 
-    # 5. 回读 4B：区分「写入失败」与「读回失真」
-    want4 = zlib.crc32(pat[0:4]) & 0xFFFFFFFF
-    ff4 = zlib.crc32(b"\xFF" * 4) & 0xFFFFFFFF
-    st, calc, csize = verify_probe(bl, 4, want4)
+    # 5. 回读 8B：区分「写入失败」与「读回失真」
+    want8 = zlib.crc32(pat[0:8]) & 0xFFFFFFFF
+    ff8 = zlib.crc32(b"\xFF" * 8) & 0xFFFFFFFF
+    st, calc, csize = verify_probe(bl, 8, want8)
     if st is None:
-        step("VERIFY 4B 回读", False, "无响应")
+        step("VERIFY 8B 回读", False, "无响应")
     else:
-        hint = "内容=图案 ✓" if calc == want4 else (
-            f"内容≠图案（若={ff4:#010x} 则仍为全FF）")
-        step("VERIFY 4B 回读", st == 0 and calc == want4,
-             f"status={st_name(st)} calc_crc={calc:#010x}（图案={want4:#010x}）—— {hint}")
+        hint = "内容=图案 ✓" if calc == want8 else (
+            f"内容≠图案（若={ff8:#010x} 则仍为全FF）")
+        step("VERIFY 8B 回读", st == 0 and calc == want8,
+             f"status={st_name(st)} calc_crc={calc:#010x}（图案={want8:#010x}）—— {hint}")
 
-    # 6. 其余 508B 分块写入
-    for off, payload in ((4, pat[4:252]), (252, pat[252:504]), (504, pat[504:512])):
+    # 6. 其余 504B 分块写入（与首块 8B 互不重叠——同址重编程会 PGERR）
+    for off, payload in ((8, pat[8:252]), (252, pat[252:504]), (504, pat[504:512])):
         bl.noise = b""
         t0 = time.time()
         r = bl.cmd("write", struct.pack("<I", off) + payload, timeout=5.0)
@@ -503,13 +543,16 @@ def build_parser():
     ap.add_argument("command",
                     choices=["ping", "info", "meta", "erase", "verify",
                              "upgrade", "jump", "reset", "selftest",
-                             "listen", "raw", "setmeta"])
+                             "listen", "raw", "setmeta", "ota"])
     ap.add_argument("arg", nargs="?", help="upgrade: 镜像文件；verify: size")
     ap.add_argument("arg2", nargs="?", help="verify: crc32 十六进制")
     ap.add_argument("--port", default="COM4")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--pace", type=int, default=0,
                     help="命令间插入延时（ms），用于时序假设验证")
+    ap.add_argument("--conn", choices=["serial", "bt"], default="serial",
+                    help="连接类型：serial=有线串口（默认）；bt=蓝牙 SPP（HC-05，"
+                         "打开失败自动重试）")
     ap.add_argument("--version", action="version",
                     version=f"LiteBootUpgrader v{VERSION}")
     return ap
@@ -525,7 +568,7 @@ def main():
     if a.command == "selftest":
         sys.exit(selftest(BootLoader(a.port, a.baud, a.pace)))
 
-    bl = BootLoader(a.port, a.baud, a.pace)
+    bl = BootLoader(a.port, a.baud, a.pace, a.conn)
     if a.command == "ping":
         r = bl.cmd("ping")
         print("无响应" if r is None else
@@ -533,6 +576,15 @@ def main():
     elif a.command == "info":
         r = bl.cmd("info")
         print("无响应" if r is None else parse_info(r["data"]))
+    elif a.command == "ota":
+        r = bl.cmd("ota", timeout=2.0)
+        if r is None:
+            print("无响应")
+        else:
+            try:
+                print(parse_ota(r["data"]))
+            except RuntimeError as e:
+                print(f"ota: {e}")
     elif a.command == "meta":
         r = bl.cmd("get_meta")
         print("无响应" if r is None else meta_str(parse_meta(r["data"])))

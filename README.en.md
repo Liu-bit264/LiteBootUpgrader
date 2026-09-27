@@ -4,19 +4,20 @@
 
 The official host tool for
 [LiteBootLoader](https://github.com/Liu-bit264/LiteBootLoader) (the firmware repo,
-sibling directory `../LiteBootLoader` locally): one-click serial upgrade, jump to APP,
-reset, workflow self-test and a GUI. The **sole implementation** of the upgrade flow
-lives in this repo's `bl_upgrade.py`; the protocol specification (frame format, command
-table, state machine) is defined in the firmware repo's `docs/protocol.md`.
+sibling directory `../LiteBootLoader` locally): one-click upgrade over serial (wired)
+or Bluetooth (HC-05 SPP), OTA status query, jump to APP, reset, workflow self-test and
+a GUI. The **sole implementation** of the upgrade flow lives in this repo's
+`bl_upgrade.py`; the protocol specification (frame format, command table, state
+machine) is defined in the firmware repo's `docs/protocol.md`.
 
 ## Repository Layout
 
 ```text
 LiteBootUpgrader/
 ├── bl_upgrade.py          CLI & protocol library (run_upgrade/ensure_bl/cmd_retry with log/progress callbacks)
-├── bl_upgrade_gui.py      tkinter GUI (one-click upgrade / jump / reset / PING)
+├── bl_upgrade_gui.py      tkinter GUI (wired/Bluetooth connection, one-click upgrade / jump / reset / PING)
 ├── bl_powerloss_drill.py  Acceptance #9 power-loss recovery drill (depends on bl_upgrade)
-├── test_host_protocol.py  Host-side hardware-free unit tests (CRC/frames/parser/CLI/GUI state, 25 checks)
+├── test_host_protocol.py  Host-side hardware-free unit tests (CRC/frames/parser/CLI/GUI state, 32 checks)
 ├── bl_upgrade_gui.bat     Double-click GUI launcher
 ├── build_exe.bat          Windows executable build script (PyInstaller → dist/)
 ├── docs/gui.png           GUI screenshot
@@ -63,11 +64,15 @@ restarts back. The mode is stored in `~/.litebootupgrader_gui.json`:
 - **One-click upgrade**: works from any state (BL or APP) — when the target runs the
   APP, it automatically takes the "request back to BL" path (SET_META bl_request →
   reset → BL consumes the flag), with a progress bar and log throughout;
+- **Connection type**: a dropdown in the serial frame selects "wired serial / Bluetooth
+  HC-05" — Bluetooth is simply the SPP COM port created by pairing (the module needs a
+  one-time AT setup to 115200, see the firmware repo's `docs/dev/bluetooth_notes.md`
+  §5); open failures retry automatically; the protocol stack is fully shared with wired;
 - **Jump / Reset / PING**: single-command actions, serial banner read back into the log pane;
 - **Image pane**: shows the size and CRC32 after 4-byte padding (same scale as VERIFY);
-- **Advanced panel (advanced mode only)**: INFO / META / ERASE (double confirmation) /
-  SELFTEST / VERIFY / LISTEN / RAW / SETMETA, plus baud-rate and pace(ms) options —
-  behavior aligned one-to-one with the CLI;
+- **Advanced panel (advanced mode only)**: INFO / META / OTA query / ERASE (double
+  confirmation) / SELFTEST / VERIFY / LISTEN / RAW / SETMETA, plus baud-rate and
+  pace(ms) options — behavior aligned one-to-one with the CLI;
 - **Serial exclusivity**: close VOFA+ / other serial monitors first (a COM port is exclusive).
 
 ## CLI Subcommands
@@ -75,24 +80,26 @@ restarts back. The mode is stored in `~/.litebootupgrader_gui.json`:
 | Subcommand | Purpose |
 |---|---|
 | `upgrade <bin>` | One-click upgrade (ensure_bl → erase → chunked write → verify) |
+| `ota` | OTA status query (BL/APP versions, APP validity, arrival channel, Bluetooth link) |
 | `selftest` | 15-step hardware-in-the-loop upgrade self-test |
 | `ping / info / meta` | Handshake / BL info & telemetry / parameter-area metadata |
 | `erase / verify <size> <crc>` | Manual step-by-step operations |
 | `jump / reset` | Jump to APP / reset |
 | `setmeta <f> <v> / raw <hex> / listen <sec>` | Metadata / raw bytes / monitor |
 
-Common options: `--port` (default COM4, set to your actual port), `--baud 115200`,
-`--pace <ms>` (inter-command delay, for timing experiments). Run
-`bl_upgrade.py -h` (`--help`) to list all subcommands and options; `--version` prints
-the version.
+Common options: `--port` (default COM4, set to your actual port; the Bluetooth SPP port
+works the same way), `--baud 115200`, `--pace <ms>` (inter-command delay, for timing
+experiments), `--conn serial|bt` (connection type; bt = Bluetooth SPP with automatic
+open retry). Run `bl_upgrade.py -h` (`--help`) to list all subcommands and options;
+`--version` prints the version.
 
 ### GUI vs CLI Capability Matrix
 
 | Interface | Coverage |
 |---|---|
-| GUI basic mode (default) | One-click upgrade, jump to APP, reset, PING + serial enumeration/refresh, image CRC32 preview, progress bar/log pane |
-| GUI advanced mode (tick, confirm, UI restart) | On top of basic mode: all 8 CLI debug/diagnostic operations (info / meta / erase / verify / selftest / listen / raw / setmeta) plus baud-rate and pace options — **feature parity with the CLI** |
-| CLI | All 12 subcommands + `-h/--help`, `--version` |
+| GUI basic mode (default) | One-click upgrade, jump to APP, reset, PING + serial enumeration/refresh, connection type (wired/Bluetooth), image CRC32 preview, progress bar/log pane |
+| GUI advanced mode (tick, confirm, UI restart) | On top of basic mode: all 9 CLI debug/diagnostic operations (info / meta / ota / erase / verify / selftest / listen / raw / setmeta) plus baud-rate and pace options — **feature parity with the CLI** |
+| CLI | All 13 subcommands + `-h/--help`, `--version`, `--conn` |
 
 ### Retry & Timeout Conventions (mirrors the firmware repo's docs/protocol.md §7)
 
@@ -104,18 +111,18 @@ status codes are not retried (they are real answers).
 
 | Item | Value |
 |---|---|
-| Scope | Works over the LiteBootLoader upgrade protocol (VER 0x01) and is **decoupled from the chip model**: any LiteBootLoader BL implementing this protocol is supported; validated combination = BL 0.1.0 + STM32F103C8T6; multi-chip parameterization follows the firmware repo's CSP roadmap |
-| Protocol version | VER 0x01 (firmware repo `docs/protocol.md`) |
-| Companion firmware | LiteBootLoader BL 0.1.0+ |
+| Scope | Works over the LiteBootLoader upgrade protocol (VER 0x01) and is **decoupled from the chip model**: any LiteBootLoader BL implementing this protocol is supported; validated combination = BL 0.2.0 + STM32F103C8T6; multi-chip parameterization follows the firmware repo's CSP roadmap |
+| Protocol version | VER 0x01 (firmware repo `docs/protocol.md`; 0x10 OTA_QUERY available with BL 0.2.0+) |
+| Companion firmware | LiteBootLoader BL 0.2.0+ (0.1.0 also works, without the `ota` query and the Bluetooth channel) |
 | Image limit | Currently bound to the STM32F103C8T6 partition, 46 KiB (0xB800), auto-padded to 4-byte alignment with 0xFF; other chip partitions pending CLI parameterization (see the firmware repo's CSP roadmap) |
 | Image verification | CRC-32/ISO-HDLC (zlib-compatible); frame check CRC16/MODBUS |
-| Serial | 115200 8N1, Windows COMx / Linux ttyUSBx |
+| Serial | 115200 8N1, Windows COMx / Linux ttyUSBx; Bluetooth = the SPP COM port created by pairing an HC-05 (one-time AT setup in the firmware repo's bluetooth_notes.md §5) |
 
 ## Testing
 
 ```bash
-# Host-side unit tests (no hardware; 25 checks: CRC KAT / frame templates / parser /
-# response parsing / SEQ & CMD mismatch discarding / GUI import / CLI parser / GUI state persistence)
+# Host-side unit tests (no hardware; 32 checks: CRC KAT / frame templates / parser /
+# response parsing incl. OTA / SEQ & CMD mismatch discarding / GUI import / CLI parser / GUI state persistence)
 uv run --python 3.12 --with pyserial python test_host_protocol.py
 
 # Hardware-in-the-loop: 15-step upgrade self-test (board online)
@@ -143,6 +150,8 @@ Artifacts land in `dist\` (`build/` and `*.spec` are intermediates, not committe
 | Symptom | Fix |
 |---|---|
 | Opening the port fails (access denied) | Close the occupier: VOFA+ / serial monitor / another instance of this tool |
+| Bluetooth port won't open / keeps dropping | Make sure the module is powered and paired (default PIN 1234); `--conn bt` / "Bluetooth HC-05" already retries on open, re-plug the module if it still fails |
+| Bluetooth port never answers | The module's data-mode baud isn't 115200: redo the AT setup per the firmware repo's `docs/dev/bluetooth_notes.md` §5 |
 | No COM port found | Confirm the debug adapter's CDC serial in Device Manager; try another USB cable/port (flaky contacts seen in practice) |
 | All commands time out | The target may run the APP or sit halted under a debugger: reset it with the debugger and retry |
 | Occasional timeout then success | USB-CDC jitter triggers the BL's 2 s in-frame timeout — normal, resent automatically |
@@ -150,7 +159,7 @@ Artifacts land in `dist\` (`build/` and `*.spec` are intermediates, not committe
 
 ## Version
 
-Current version **v1.2.0**; history and change details in [CHANGELOG.md](CHANGELOG.md).
+Current version **v1.3.0**; history and change details in [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing
 

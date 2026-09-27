@@ -6,10 +6,11 @@
 
 两种界面模式（状态记录在 ~/.litebootupgrader_gui.json，勾选"高级模式"→ 弹窗确认 →
 窗口级重启（销毁旧窗口、按新模式重建）后生效；取消勾选同样确认后重启返回基础模式）：
+  连接类型：串口框内下拉选择「有线串口 / 蓝牙 HC-05」，经 blp.BootLoader(conn=...) 传导；
   基础模式：一键升级（对端在跑 APP 时自动"请求回 BL"→ 擦除 → 写入 → 校验，带进度条）、
             跳转 APP、复位、PING，操作日志实时滚动；
-  高级模式：额外暴露 CLI 全量功能——INFO / META / ERASE / SELFTEST / VERIFY / LISTEN /
-            RAW / SETMETA，以及波特率与 pace(ms) 参数（影响本面板全部操作）。
+  高级模式：额外暴露 CLI 全量功能——INFO / META / OTA 查询 / ERASE / SELFTEST / VERIFY /
+            LISTEN / RAW / SETMETA，以及波特率与 pace(ms) 参数（影响本面板全部操作）。
 
 运行（依赖隔离，勿直接 pip install）：
   uv run --python 3.12 --with pyserial bl_upgrade_gui.py
@@ -111,6 +112,10 @@ class App:
         self.port_cb.pack(side="left", padx=6, pady=6)
         ttk.Button(top, text="刷新", command=self.refresh_ports)\
             .pack(side="left", padx=2)
+        ttk.Label(top, text="连接").pack(side="left", padx=(10, 2))
+        self.conn_var = tk.StringVar(value="有线串口")
+        ttk.Combobox(top, textvariable=self.conn_var, width=9, state="readonly",
+                     values=["有线串口", "蓝牙 HC-05"]).pack(side="left")
         ttk.Label(top, text="串口与 VOFA+/串口助手互斥")\
             .pack(side="left", padx=12)
 
@@ -186,11 +191,12 @@ class App:
         r1.pack(fill="x", padx=4, pady=2)
         b_info = ttk.Button(r1, text="INFO", command=self.do_info)
         b_meta = ttk.Button(r1, text="META", command=self.do_meta)
+        b_ota = ttk.Button(r1, text="OTA 查询", command=self.do_ota)
         b_erase = ttk.Button(r1, text="ERASE（危险）", command=self.do_erase)
         b_selftest = ttk.Button(r1, text="SELFTEST", command=self.do_selftest)
-        for b in (b_info, b_meta, b_erase, b_selftest):
+        for b in (b_info, b_meta, b_ota, b_erase, b_selftest):
             b.pack(side="left", padx=4, pady=2)
-        self.lock_btns += [b_info, b_meta, b_erase, b_selftest]
+        self.lock_btns += [b_info, b_meta, b_ota, b_erase, b_selftest]
 
         r2 = ttk.Frame(adv)
         r2.pack(fill="x", padx=4, pady=2)
@@ -349,6 +355,9 @@ class App:
     def do_meta(self):
         self._start_adv(self._op_meta)
 
+    def do_ota(self):
+        self._start_adv(self._op_ota)
+
     def do_erase(self):
         if not self._check_ready():
             return
@@ -407,8 +416,9 @@ class App:
         self.q.put(("progress", done, total))
 
     def _open_and_close(self, port):
-        """返回 BootLoader；调用方负责 close。波特率/pace 用 start() 时取好的纯值。"""
-        return blp.BootLoader(port, self.cur_baud, self.cur_pace)
+        """返回 BootLoader；调用方负责 close。波特率/pace/连接类型用主线程取好的纯值。"""
+        conn = "bt" if "蓝牙" in self.conn_var.get() else "serial"
+        return blp.BootLoader(port, self.cur_baud, self.cur_pace, conn=conn)
 
     def _drain_banner(self, bl: blp.BootLoader, secs: float):
         """收尾读取若干秒原始字节（横幅/日志），转文本进日志窗。"""
@@ -485,6 +495,11 @@ class App:
             return 1
         self._logcb("meta: " + blp.meta_str(blp.parse_meta(r["data"])))
         return 0
+
+    def _op_ota(self, bl):
+        r = bl.cmd("ota", timeout=2.0)
+        self._logcb("ota: 无响应" if r is None else blp.parse_ota(r["data"]))
+        return 0 if r is not None else 1
 
     def _op_erase(self, bl):
         t0 = time.time()

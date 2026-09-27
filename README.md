@@ -3,7 +3,8 @@
 简体中文 | [English](README.en.md)
 
 [LiteBootLoader](https://github.com/Liu-bit264/LiteBootLoader)（固件仓，本地同层目录
-`../LiteBootLoader`）的官方上位机：串口一键升级、跳转、复位、流程自检与 GUI。
+`../LiteBootLoader`）的官方上位机：串口（有线）/ 蓝牙（HC-05 SPP）一键升级、OTA 状态
+查询、跳转、复位、流程自检与 GUI。
 协议流程的**唯一实现**在本仓 `bl_upgrade.py`；帧格式/命令表/状态机等协议规范见
 LiteBootLoader 仓库的 `docs/protocol.md`。
 
@@ -12,9 +13,9 @@ LiteBootLoader 仓库的 `docs/protocol.md`。
 ```text
 LiteBootUpgrader/
 ├── bl_upgrade.py          CLI 与协议库（run_upgrade/ensure_bl/cmd_retry 支持 log/progress 回调）
-├── bl_upgrade_gui.py      tkinter 图形界面（一键升级/跳转/复位/PING）
+├── bl_upgrade_gui.py      tkinter 图形界面（有线/蓝牙连接、一键升级/跳转/复位/PING）
 ├── bl_powerloss_drill.py  验收 #9 参数区写入中断恢复钻具（依赖 bl_upgrade）
-├── test_host_protocol.py  主机侧无硬件单测（CRC/帧/解析器/CLI/GUI 状态，25 项）
+├── test_host_protocol.py  主机侧无硬件单测（CRC/帧/解析器/CLI/GUI 状态，32 项）
 ├── bl_upgrade_gui.bat     GUI 双击启动器
 ├── build_exe.bat          Windows 可执行程序构建脚本（PyInstaller → dist/）
 ├── docs/gui.png           GUI 界面截图
@@ -57,10 +58,13 @@ uv run --python 3.12 --with pyserial bl_upgrade.py selftest --port COM4
 
 - **一键升级**：从任意状态（BL 或 APP）直接升——对端是 APP 时自动走
   "请求回 BL"（SET_META bl_request → 复位 → BL 消费标志），全程进度条 + 日志；
+- **连接类型**：串口框内下拉「有线串口 / 蓝牙 HC-05」——蓝牙即配对后系统生成的
+  SPP COM 口（模块需先一次性 AT 配置到 115200，见固件仓 `docs/dev/bluetooth_notes.md` §5），
+  打开失败自动重试，协议栈与有线完全共用；
 - **跳转 APP / 复位 / PING**：单命令操作，自动回读串口横幅进日志窗；
 - **镜像栏**：显示补齐 4 字节对齐后的大小与 CRC32（与 VERIFY 期望值同口径）；
-- **高级面板（仅高级模式）**：INFO / META / ERASE（二次确认）/ SELFTEST / VERIFY /
-  LISTEN / RAW / SETMETA，及波特率、pace(ms) 参数——行为与 CLI 逐一对齐；
+- **高级面板（仅高级模式）**：INFO / META / OTA 查询 / ERASE（二次确认）/ SELFTEST /
+  VERIFY / LISTEN / RAW / SETMETA，及波特率、pace(ms) 参数——行为与 CLI 逐一对齐；
 - **串口互斥**：使用前请关闭 VOFA+ / 串口助手（COM 口独占）。
 
 ## CLI 子命令
@@ -68,23 +72,25 @@ uv run --python 3.12 --with pyserial bl_upgrade.py selftest --port COM4
 | 子命令 | 作用 |
 |---|---|
 | `upgrade <bin>` | 一键升级（ensure_bl → 擦除 → 分块写入 → 校验） |
+| `ota` | OTA 状态查询（BL/APP 版本、APP 有效性、到达通道、蓝牙连接） |
 | `selftest` | 15 步升级流程硬件在环自检 |
 | `ping / info / meta` | 握手 / BL 信息与遥测 / 参数区元数据 |
 | `erase / verify <size> <crc>` | 手动分步操作 |
 | `jump / reset` | 跳转 / 复位 |
 | `setmeta <f> <v> / raw <hex> / listen <秒>` | 元数据 / 原始字节 / 监听 |
 
-通用参数：`--port`（默认 COM4，按实际端口指定）、`--baud 115200`、`--pace <ms>`
-（命令间延时，时序实验用）。运行 `bl_upgrade.py -h`（`--help`）查看全部子命令与
-参数；`--version` 输出版本号。
+通用参数：`--port`（默认 COM4，按实际端口指定；蓝牙 SPP 口同样适用）、`--baud 115200`、
+`--pace <ms>`（命令间延时，时序实验用）、`--conn serial|bt`（连接类型，bt=蓝牙 SPP，
+打开失败自动重试）。运行 `bl_upgrade.py -h`（`--help`）查看全部子命令与参数；
+`--version` 输出版本号。
 
 ### GUI 与 CLI 能力矩阵
 
 | 界面 | 覆盖能力 |
 |---|---|
-| GUI 基础模式（默认） | 一键升级、跳转 APP、复位、PING + 串口枚举/刷新、镜像 CRC32 预览、进度条/日志窗 |
-| GUI 高级模式（勾选确认后重启进入） | 在基础模式之上增加 CLI 全量 8 个调试/诊断操作（info / meta / erase / verify / selftest / listen / raw / setmeta）与波特率、pace 参数——**与 CLI 功能同步** |
-| CLI | 12 个子命令全量 + `-h/--help`、`--version` |
+| GUI 基础模式（默认） | 一键升级、跳转 APP、复位、PING + 串口枚举/刷新、连接类型（有线/蓝牙）、镜像 CRC32 预览、进度条/日志窗 |
+| GUI 高级模式（勾选确认后重启进入） | 在基础模式之上增加 CLI 全量 9 个调试/诊断操作（info / meta / ota / erase / verify / selftest / listen / raw / setmeta）与波特率、pace 参数——**与 CLI 功能同步** |
+| CLI | 13 个子命令全量 + `-h/--help`、`--version`、`--conn` |
 
 ### 重试与超时约定（对应 LiteBootLoader 仓库 docs/protocol.md §7）
 
@@ -95,17 +101,17 @@ uv run --python 3.12 --with pyserial bl_upgrade.py selftest --port COM4
 
 | 项 | 值 |
 |---|---|
-| 支持范围 | 按 LiteBootLoader 升级协议（VER 0x01）工作，**与芯片型号解耦**：任何实现该协议的 LiteBootLoader BL 均可配合；当前已验证组合 = BL 0.1.0 + STM32F103C8T6，多芯片参数化随固件仓 CSP 扩展 |
-| 协议版本 | VER 0x01（LiteBootLoader 仓库 `docs/protocol.md`） |
-| 配套固件 | LiteBootLoader BL 0.1.0+ |
+| 支持范围 | 按 LiteBootLoader 升级协议（VER 0x01）工作，**与芯片型号解耦**：任何实现该协议的 LiteBootLoader BL 均可配合；当前已验证组合 = BL 0.2.0 + STM32F103C8T6，多芯片参数化随固件仓 CSP 扩展 |
+| 协议版本 | VER 0x01（LiteBootLoader 仓库 `docs/protocol.md`，0x10 OTA_QUERY 随 BL 0.2.0 起可用） |
+| 配套固件 | LiteBootLoader BL 0.2.0+（0.1.0 亦可，仅无 `ota` 查询与蓝牙通道） |
 | 镜像上限 | 当前按 STM32F103C8T6 分区 46 KiB（0xB800），4 字节对齐自动补 0xFF；其他芯片分区待 CLI 参数化（见固件仓 CSP 路线） |
 | 镜像校验 | CRC-32/ISO-HDLC（zlib 兼容）；帧校验 CRC16/MODBUS |
-| 串口 | 115200 8N1，Windows COMx / Linux ttyUSBx |
+| 串口 | 115200 8N1，Windows COMx / Linux ttyUSBx；蓝牙 = HC-05 配对后的 SPP COM 口（固件仓 bluetooth_notes.md §5 一次性 AT 配置） |
 
 ## 测试
 
 ```bash
-# 主机侧单测（无需硬件，25 项：CRC KAT/帧模板/解析器/响应解析/SEQ 与 CMD 错位丢弃/GUI 导入/CLI 解析器/GUI 状态持久化）
+# 主机侧单测（无需硬件，32 项：CRC KAT/帧模板/解析器/响应解析含 OTA/SEQ 与 CMD 错位丢弃/GUI 导入/CLI 解析器/GUI 状态持久化）
 uv run --python 3.12 --with pyserial python test_host_protocol.py
 
 # 硬件在环：15 步升级流程自检（板子在线时）
@@ -133,6 +139,8 @@ uv run --python 3.12 --with pyserial --with pyinstaller \
 | 症状 | 处理 |
 |---|---|
 | 打开串口失败（拒绝访问） | 关闭占用者：VOFA+ / 串口助手 / 另一个本工具实例 |
+| 蓝牙口打不开/反复断开 | 确认模块上电、PC 已配对（默认 PIN 1234）；`--conn bt`/「蓝牙 HC-05」已含打开重试，仍失败重插模块 |
+| 蓝牙口全部无响应 | 模块数据模式不是 115200：按固件仓 `docs/dev/bluetooth_notes.md` §5 重新 AT 配置 |
 | 找不到 COM 口 | 设备管理器确认调试器 CDC 串口；换 USB 线/口（接触不良实测出现过） |
 | 全部命令无响应 | 对端可能在跑 APP 或停留在调试器暂停态：用调试器复位后重试 |
 | 偶发命令超时后成功 | USB-CDC 抖动触发 BL 帧内 2 s 超时，属正常，自动重发 |
@@ -140,7 +148,7 @@ uv run --python 3.12 --with pyserial --with pyinstaller \
 
 ## 版本
 
-当前版本 **v1.2.0**，历史与变更明细见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 **v1.3.0**，历史与变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 参与贡献
 

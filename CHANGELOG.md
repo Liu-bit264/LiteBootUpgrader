@@ -2,6 +2,25 @@
 
 本项目的所有显著变更记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer 2.0.0](https://semver.org/lang/zh-CN/)。
 
+## [1.3.0] - 2026-09-27
+
+配套固件仓 LiteBootLoader 0.2.0《空口蓝牙串口及OTA》（ADR-016）。
+
+### Added
+
+- **蓝牙连接支持**（目标 1）：CLI `--conn serial|bt`（bt=蓝牙 SPP/HC-05，打开失败自动
+  重试 ×3、间隔 0.5 s，容重连竞态）；GUI 串口框新增「连接类型」下拉（有线串口/蓝牙
+  HC-05），经唯一开漏斗 `_open_and_close` 传导——协议栈（帧/重试/幂等）与有线完全共用
+- **OTA 状态查询**（目标 3）：CLI 新增 `ota` 子命令、GUI 高级面板新增「OTA 查询」按钮，
+  发送 0x10 OTA_QUERY 并解析 22 B 响应（BL/APP 版本、APP 实时有效性、app_size/CRC、
+  元数据 seq、请求到达通道、蓝牙连接状态）；对 BL 0.1.0 旧固件回 STATE_ERROR
+- 模块需一次性 AT 配置数据模式到 115200，步骤见固件仓 `docs/dev/bluetooth_notes.md` §5
+
+### Changed
+
+- 主机侧单测扩至 32 项（parse_ota 全量/状态/防御、OTA_QUERY 帧实测模板、
+  `ota` + `--conn` 解析器、命令表含 ota）
+
 ## [1.2.0] - 2026-09-27
 
 ### Added
