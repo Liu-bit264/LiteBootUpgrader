@@ -111,10 +111,10 @@ status codes are not retried (they are real answers).
 
 | Item | Value |
 |---|---|
-| Scope | Works over the LiteBootLoader upgrade protocol (VER 0x01) and is **decoupled from the chip model**: any LiteBootLoader BL implementing this protocol is supported; validated combination = BL 0.2.0 + STM32F103C8T6; multi-chip parameterization follows the firmware repo's CSP roadmap |
+| Scope | Works over the LiteBootLoader upgrade protocol (VER 0x01) and is **decoupled from the chip model**: any LiteBootLoader BL implementing this protocol is supported; validated combinations = BL 0.3.0 + STM32F103C8T6 (full flow) and the STM32F411CEU6 minimal package (info/upgrade/jump/setmeta round-trip); multi-chip parameterization follows the firmware repo's CSP roadmap |
 | Protocol version | VER 0x01 (firmware repo `docs/protocol.md`; 0x10 OTA_QUERY available with BL 0.2.0+) |
-| Companion firmware | LiteBootLoader BL 0.2.0+ (0.1.0 also works, without the `ota` query and the Bluetooth channel) |
-| Image limit | Currently bound to the STM32F103C8T6 partition, 46 KiB (0xB800), auto-padded to 4-byte alignment with 0xFF; other chip partitions pending CLI parameterization (see the firmware repo's CSP roadmap) |
+| Companion firmware | LiteBootLoader BL 0.3.0+ (0.1.0/0.2.0 also work, without the `ota` query and the Bluetooth channel); **Bluetooth links require the firmware to enable the BT channel** (`BL_TRANSPORT_BT_EN=1`; not enabled in the default example config since 0.3.0 — see porting_guide §3.1) |
+| Image limit | Currently validated against the STM32F103C8T6 partition, 46 KiB (0xB800), auto-padded to 4-byte alignment with 0xFF — the F411CEU6 (448K partition) upgrade/jump flow is verified but images remain subject to this 46K cap; `--chip` parameterization on the firmware repo's CSP roadmap |
 | Image verification | CRC-32/ISO-HDLC (zlib-compatible); frame check CRC16/MODBUS |
 | Serial | 115200 8N1, Windows COMx / Linux ttyUSBx; Bluetooth = the SPP COM port created by pairing an HC-05 (one-time AT setup in the firmware repo's bluetooth_notes.md §5) |
 

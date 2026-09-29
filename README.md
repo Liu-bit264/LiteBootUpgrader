@@ -101,10 +101,10 @@ uv run --python 3.12 --with pyserial bl_upgrade.py selftest --port COM4
 
 | 项 | 值 |
 |---|---|
-| 支持范围 | 按 LiteBootLoader 升级协议（VER 0x01）工作，**与芯片型号解耦**：任何实现该协议的 LiteBootLoader BL 均可配合；当前已验证组合 = BL 0.2.0 + STM32F103C8T6，多芯片参数化随固件仓 CSP 扩展 |
+| 支持范围 | 按 LiteBootLoader 升级协议（VER 0x01）工作，**与芯片型号解耦**：任何实现该协议的 LiteBootLoader BL 均可配合；当前已验证组合 = BL 0.3.0 + STM32F103C8T6（全流程）、STM32F411CEU6 最小包（初始查询/升级/跳转/setmeta 回环）；多芯片参数化随固件仓 CSP 扩展 |
 | 协议版本 | VER 0x01（LiteBootLoader 仓库 `docs/protocol.md`，0x10 OTA_QUERY 随 BL 0.2.0 起可用） |
-| 配套固件 | LiteBootLoader BL 0.2.0+（0.1.0 亦可，仅无 `ota` 查询与蓝牙通道） |
-| 镜像上限 | 当前按 STM32F103C8T6 分区 46 KiB（0xB800），4 字节对齐自动补 0xFF；其他芯片分区待 CLI 参数化（见固件仓 CSP 路线） |
+| 配套固件 | LiteBootLoader BL 0.3.0+（0.1.0/0.2.0 亦可，仅差 `ota` 查询与蓝牙通道）；**蓝牙连接需固件启用蓝牙通道**（`BL_TRANSPORT_BT_EN=1`，0.3.0 起默认示例配置未启用，见固件仓 porting_guide §3.1） |
+| 镜像上限 | 当前按 STM32F103C8T6 分区校验 46 KiB（0xB800），4 字节对齐自动补 0xFF——F411CEU6（448K 分区）升级/跳转已验证但镜像仍受该 46K 上限约束；`--chip` 参数化见固件仓 CSP 路线 |
 | 镜像校验 | CRC-32/ISO-HDLC（zlib 兼容）；帧校验 CRC16/MODBUS |
 | 串口 | 115200 8N1，Windows COMx / Linux ttyUSBx；蓝牙 = HC-05 配对后的 SPP COM 口（固件仓 bluetooth_notes.md §5 一次性 AT 配置） |
 
