@@ -19,13 +19,14 @@
 
 ```text
 LiteBootUpgrader/
-├── bl_upgrade.py          CLI 与协议库（run_upgrade/ensure_bl/cmd_retry 支持 log/progress 回调）
+├── bl_upgrade.py          CLI 与协议库（run_upgrade 支持 log/progress 回调，ensure_bl/cmd_retry 支持 log）
 ├── bl_upgrade_gui.py      tkinter 图形界面（有线/蓝牙连接、一键升级/跳转/复位/PING）
 ├── bl_powerloss_drill.py  验收 #9 参数区写入中断恢复钻具（依赖 bl_upgrade）
 ├── test_host_protocol.py  主机侧无硬件单测（CRC/帧/解析器/CLI/GUI 状态，32 项）
 ├── bl_upgrade_gui.bat     GUI 双击启动器
 ├── build_exe.bat          Windows 可执行程序构建脚本（PyInstaller → dist/）
 ├── docs/gui.png           GUI 界面截图
+├── docs/gui_adv.png       高级模式界面截图
 ├── LICENSE                MIT 许可证
 └── dist/                  构建产物（不入库，见 .gitignore）
 ```
@@ -64,6 +65,6 @@ selftest 结果。
 
 ## 与固件仓的联动
 
-- 协议契约：帧格式、命令、状态码、重试/超时约定（§7）以
+- 协议契约：帧格式、命令、状态码、重试/超时约定（§6）以
   [LiteBootLoader docs/protocol.md](https://github.com/Liu-bit264/LiteBootLoader/blob/main/docs/protocol.md) 为准
 - 固件仓协议或行为变更后，本仓需同步回归（`test_host_protocol.py` + 硬件 E2E）

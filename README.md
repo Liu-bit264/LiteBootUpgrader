@@ -64,7 +64,7 @@ uv run --python 3.12 --with pyserial bl_upgrade.py selftest --port COM4
 | `ota` | OTA 状态查询（BL/APP 版本、APP 有效性、到达通道、蓝牙连接） |
 | `selftest` | 15 步升级流程硬件在环自检 |
 | `ping / info / meta` | 握手 / BL 信息与遥测 / 参数区元数据 |
-| `erase / verify <size> <crc>` | 手动分步操作 |
+| `erase / verify <size> <crc32_hex>` | 手动分步操作 |
 | `jump / reset` | 跳转 / 复位 |
 | `setmeta <f> <v> / raw <hex> / listen <秒>` | 元数据 / 原始字节 / 监听 |
 
@@ -81,10 +81,12 @@ uv run --python 3.12 --with pyserial bl_upgrade.py selftest --port COM4
 | GUI 高级模式（勾选确认后重启进入） | 在基础模式之上增加 CLI 全量 9 个调试/诊断操作（info / meta / ota / erase / verify / selftest / listen / raw / setmeta）与波特率、pace 参数——**与 CLI 功能同步** |
 | CLI | 13 个子命令全量 + `-h/--help`、`--version`、`--conn` |
 
-### 重试与超时约定（对应 LiteBootLoader 仓库 docs/protocol.md §7）
+### 重试与超时（对应 LiteBootLoader 仓库 docs/protocol.md §6）
 
-单命令响应超时 1000 ms（ERASE/VERIFY 5000 ms），超时重发 ≤3 次、间隔 2.2 s
-（≥ BL 帧内 2000 ms 解析器复位窗口）；收到错误状态码不重试（那是真实答复）。
+`upgrade` 全流程自动重试：单命令响应超时（探测 1 s、擦除/校验 5 s、分块写入 2 s）后重发，
+至多 3 次尝试（首发 1 + 重发 ≤2）、间隔 2.2 s（≥ BL 帧内 2000 ms 解析器复位窗口）；
+收到错误状态码不重试（那是真实答复）。**手工单命令不自动重发**，超时上限分别为
+`ping/info/meta/setmeta` 1 s、`ota/jump/reset` 2 s、`verify` 3 s、`erase` 8 s。
 
 ## 构建 Windows 可执行程序
 
@@ -107,6 +109,7 @@ uv run --python 3.12 --with pyserial --with pyinstaller \
 | 协议版本 | VER 0x01（LiteBootLoader 仓库 `docs/protocol.md`，0x10 OTA_QUERY 随 BL 0.2.0 起可用） |
 | 配套固件 | LiteBootLoader BL 0.3.0+（0.1.0/0.2.0 亦可，仅差 `ota` 查询与蓝牙通道）；**蓝牙连接需固件启用蓝牙通道**（`BL_TRANSPORT_BT_EN=1`，0.3.0 起默认示例配置未启用，见固件仓 porting_guide §3.1） |
 | 镜像上限 | 当前按 STM32F103C8T6 分区校验 46 KiB（0xB800），4 字节对齐自动补 0xFF——F411CEU6（448K 分区）升级/跳转已验证但镜像仍受该 46K 上限约束；`--chip` 参数化见固件仓 CSP 路线 |
+| F411 已知限制 | F411CEU6 上 `selftest` 的「越界防护」步会假 FAIL（夹具硬编码 F103 `APP_SIZE=0xB800`，该偏移在 448K APP 区内属合法写入），断电钻具 `bl_powerloss_drill.py` 亦因 pyocd 目标名硬编码 F103 而不可用——两者随 `--chip` 参数化一并解决 |
 | 镜像校验 | CRC-32/ISO-HDLC（zlib 兼容）；帧校验 CRC16/MODBUS |
 | 串口 | 115200 8N1，Windows COMx / Linux ttyUSBx；蓝牙 = HC-05 配对后的 SPP COM 口（固件仓 bluetooth_notes.md §5 一次性 AT 配置） |
 
@@ -119,7 +122,7 @@ uv run --python 3.12 --with pyserial --with pyinstaller \
 | 蓝牙口全部无响应 | 模块数据模式不是 115200：按固件仓 `docs/dev/bluetooth_notes.md` §5 重新 AT 配置 |
 | 找不到 COM 口 | 设备管理器确认调试器 CDC 串口；换 USB 线/口（接触不良实测出现过） |
 | 全部命令无响应 | 对端可能在跑 APP 或停留在调试器暂停态：用调试器复位后重试 |
-| 偶发命令超时后成功 | USB-CDC 抖动触发 BL 帧内 2 s 超时，属正常，自动重发 |
+| 偶发命令超时后成功 | USB-CDC 抖动触发 BL 帧内 2 s 超时，属正常（`upgrade` 会自动重发，手工单命令重跑一次即可） |
 | `verify 失败: CRC_ERROR` | 升级中断导致内容不完整，重新 `upgrade`（整片重擦重写） |
 
 ## 版本与许可
