@@ -127,7 +127,7 @@ uv run --python 3.12 --with pyserial --with pyinstaller \
 
 ## 版本与许可
 
-当前版本 **v1.3.0**，历史与变更明细见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 **v1.3.1**，历史与变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
 [MIT](LICENSE) © 2026 Qingc。LiteBootLoader 亦采用 MIT 许可证（捆绑的 third_party/CMSIS
 保留其原始许可，见其 LICENSES.md）。

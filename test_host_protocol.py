@@ -117,6 +117,9 @@ def t_parse_info():
     check("parse_info 67B 全量", "v0.1.0" in s and "app_size=5540" in s
           and "seq=175" in s and "rx=100" in s and "饥饿1500ms" in s)
     check("parse_info 1B 短响应提示", "短响应" in blp.parse_info(b"\x03"))
+    # 审计 2026-09-29 P3-2：守卫 19→31B——19~30B 原会落入 unpack_from(d,19)
+    # 触发 struct.error，现应归入短响应提示
+    check("parse_info 30B 短响应防御", "短响应" in blp.parse_info(b"\x00" * 30))
 
 
 def t_parse_meta():
@@ -236,6 +239,11 @@ def t_cli():
     except SystemExit as e:
         ok = e.code == 2
     check("CLI --conn 非法取值拒绝", ok)
+    # 审计 2026-09-29 P2-3：selftest 须传递 --conn（蓝牙下 3 次打开重试才生效）
+    import inspect
+    src = inspect.getsource(blp.main)
+    check("selftest 传递 --conn 到 BootLoader",
+          "selftest(BootLoader(a.port, a.baud, a.pace, a.conn))" in src)
 
 
 def t_gui_state():
