@@ -5,23 +5,12 @@
 [LiteBootLoader](https://github.com/Liu-bit264/LiteBootLoader)（固件仓，本地同层目录
 `../LiteBootLoader`）的官方上位机：串口（有线）/ 蓝牙（HC-05 SPP）一键升级、OTA 状态
 查询、跳转、复位、流程自检与 GUI。
-协议流程的**唯一实现**在本仓 `bl_upgrade.py`；帧格式/命令表/状态机等协议规范见
-LiteBootLoader 仓库的 `docs/protocol.md`。
 
-## 仓库结构
-
-```text
-LiteBootUpgrader/
-├── bl_upgrade.py          CLI 与协议库（run_upgrade/ensure_bl/cmd_retry 支持 log/progress 回调）
-├── bl_upgrade_gui.py      tkinter 图形界面（有线/蓝牙连接、一键升级/跳转/复位/PING）
-├── bl_powerloss_drill.py  验收 #9 参数区写入中断恢复钻具（依赖 bl_upgrade）
-├── test_host_protocol.py  主机侧无硬件单测（CRC/帧/解析器/CLI/GUI 状态，32 项）
-├── bl_upgrade_gui.bat     GUI 双击启动器
-├── build_exe.bat          Windows 可执行程序构建脚本（PyInstaller → dist/）
-├── docs/gui.png           GUI 界面截图
-├── LICENSE                MIT 许可证
-└── dist/                  构建产物（不入库，见 .gitignore）
-```
+仓库只有两个入口加两个辅助脚本：`bl_upgrade.py` 既是命令行工具也是协议库（升级流程的
+**唯一实现**，帧格式/命令表/状态机等协议规范见固件仓 `docs/protocol.md`），
+`bl_upgrade_gui.py` 是 tkinter 图形界面（有线/蓝牙连接、一键升级/跳转/复位/PING）；
+另有断电恢复验收钻具 `bl_powerloss_drill.py` 与无需硬件的主机侧单测
+`test_host_protocol.py`。纯 Python 实现，运行时仅依赖 pyserial（GUI 另需 tkinter）。
 
 ## 快速开始
 
@@ -97,30 +86,6 @@ uv run --python 3.12 --with pyserial bl_upgrade.py selftest --port COM4
 单命令响应超时 1000 ms（ERASE/VERIFY 5000 ms），超时重发 ≤3 次、间隔 2.2 s
 （≥ BL 帧内 2000 ms 解析器复位窗口）；收到错误状态码不重试（那是真实答复）。
 
-## 配套与兼容性
-
-| 项 | 值 |
-|---|---|
-| 支持范围 | 按 LiteBootLoader 升级协议（VER 0x01）工作，**与芯片型号解耦**：任何实现该协议的 LiteBootLoader BL 均可配合；当前已验证组合 = BL 0.3.0 + STM32F103C8T6（全流程）、STM32F411CEU6 最小包（初始查询/升级/跳转/setmeta 回环）；多芯片参数化随固件仓 CSP 扩展 |
-| 协议版本 | VER 0x01（LiteBootLoader 仓库 `docs/protocol.md`，0x10 OTA_QUERY 随 BL 0.2.0 起可用） |
-| 配套固件 | LiteBootLoader BL 0.3.0+（0.1.0/0.2.0 亦可，仅差 `ota` 查询与蓝牙通道）；**蓝牙连接需固件启用蓝牙通道**（`BL_TRANSPORT_BT_EN=1`，0.3.0 起默认示例配置未启用，见固件仓 porting_guide §3.1） |
-| 镜像上限 | 当前按 STM32F103C8T6 分区校验 46 KiB（0xB800），4 字节对齐自动补 0xFF——F411CEU6（448K 分区）升级/跳转已验证但镜像仍受该 46K 上限约束；`--chip` 参数化见固件仓 CSP 路线 |
-| 镜像校验 | CRC-32/ISO-HDLC（zlib 兼容）；帧校验 CRC16/MODBUS |
-| 串口 | 115200 8N1，Windows COMx / Linux ttyUSBx；蓝牙 = HC-05 配对后的 SPP COM 口（固件仓 bluetooth_notes.md §5 一次性 AT 配置） |
-
-## 测试
-
-```bash
-# 主机侧单测（无需硬件，32 项：CRC KAT/帧模板/解析器/响应解析含 OTA/SEQ 与 CMD 错位丢弃/GUI 导入/CLI 解析器/GUI 状态持久化）
-uv run --python 3.12 --with pyserial python test_host_protocol.py
-
-# 硬件在环：15 步升级流程自检（板子在线时）
-uv run --python 3.12 --with pyserial bl_upgrade.py selftest --port COM4
-
-# 验收 #9 钻具：写入风暴 + 复位注入（需板子 + 调试器）
-uv run --python 3.12 --with pyserial --with pyocd bl_powerloss_drill.py --port COM4 --rounds 10
-```
-
 ## 构建 Windows 可执行程序
 
 双击 `build_exe.bat`，或命令行：
@@ -134,6 +99,17 @@ uv run --python 3.12 --with pyserial --with pyinstaller \
 
 产物在 `dist\`（`build/`、`*.spec` 为中间产物，均不入库）。
 
+## 配套与兼容性
+
+| 项 | 值 |
+|---|---|
+| 支持范围 | 按 LiteBootLoader 升级协议（VER 0x01）工作，**与芯片型号解耦**：任何实现该协议的 LiteBootLoader BL 均可配合；当前已验证组合 = BL 0.3.0 + STM32F103C8T6（全流程）、STM32F411CEU6 最小包（初始查询/升级/跳转/setmeta 回环）；多芯片参数化随固件仓 CSP 扩展 |
+| 协议版本 | VER 0x01（LiteBootLoader 仓库 `docs/protocol.md`，0x10 OTA_QUERY 随 BL 0.2.0 起可用） |
+| 配套固件 | LiteBootLoader BL 0.3.0+（0.1.0/0.2.0 亦可，仅差 `ota` 查询与蓝牙通道）；**蓝牙连接需固件启用蓝牙通道**（`BL_TRANSPORT_BT_EN=1`，0.3.0 起默认示例配置未启用，见固件仓 porting_guide §3.1） |
+| 镜像上限 | 当前按 STM32F103C8T6 分区校验 46 KiB（0xB800），4 字节对齐自动补 0xFF——F411CEU6（448K 分区）升级/跳转已验证但镜像仍受该 46K 上限约束；`--chip` 参数化见固件仓 CSP 路线 |
+| 镜像校验 | CRC-32/ISO-HDLC（zlib 兼容）；帧校验 CRC16/MODBUS |
+| 串口 | 115200 8N1，Windows COMx / Linux ttyUSBx；蓝牙 = HC-05 配对后的 SPP COM 口（固件仓 bluetooth_notes.md §5 一次性 AT 配置） |
+
 ## 故障排查
 
 | 症状 | 处理 |
@@ -146,15 +122,13 @@ uv run --python 3.12 --with pyserial --with pyinstaller \
 | 偶发命令超时后成功 | USB-CDC 抖动触发 BL 帧内 2 s 超时，属正常，自动重发 |
 | `verify 失败: CRC_ERROR` | 升级中断导致内容不完整，重新 `upgrade`（整片重擦重写） |
 
-## 版本
+## 版本与许可
 
 当前版本 **v1.3.0**，历史与变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
-## 参与贡献
-
-反馈问题与提交 PR 的流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-
-## 许可证
-
 [MIT](LICENSE) © 2026 Qingc。LiteBootLoader 亦采用 MIT 许可证（捆绑的 third_party/CMSIS
 保留其原始许可，见其 LICENSES.md）。
+
+## 参与贡献
+
+反馈问题与提交 PR 的流程、开发环境、测试与验收钻具命令见 [CONTRIBUTING.md](CONTRIBUTING.md)。
