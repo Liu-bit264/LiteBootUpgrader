@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""bl_upgrade.py — LiteBootLoader 上位机 v1.3.0（独立仓库 LiteBootUpgrader）
+"""bl_upgrade.py — LiteBootLoader 上位机 v1.3.1（独立仓库 LiteBootUpgrader）
 
 协议见 docs/protocol.md：
   SOF(AA 55) | VER(01) | CMD | SEQ | LEN(LE16) | DATA(0..256B) | CRC16(LE16,MODBUS) | EOF(55 AA)
@@ -43,7 +43,7 @@ RETRY_ATTEMPTS = 3
 RETRY_DELAY = 2.2
 T_DEFAULT, T_ERASE, T_VERIFY = 1.0, 5.0, 5.0
 
-VERSION = "1.3.0"          # LiteBootUpgrader 版本（--version 与 description 共用）
+VERSION = "1.3.1"          # LiteBootUpgrader 版本（--version 与 description 共用）
 
 
 def crc16_modbus(data: bytes) -> int:
@@ -202,8 +202,10 @@ class BootLoader:
 # ---- 响应解析 ----
 
 def parse_info(d: bytes) -> str:
-    if len(d) < 19:
-        # 短响应：BL 全量遥测至少 19B；1B 状态响应通常是 APP 迷你响应器所答
+    if len(d) < 31:
+        # 短响应防御（审计 2026-09-29 P3-2）：基础字段至少 31B（status+ver(4)+uid(12)
+        # +flsz(2)+valid(1)+size/crc/seq(12)），否则 unpack_from(d,19) 越界；
+        # 1B 状态响应通常是 APP 迷你响应器所答
         return (f"短响应（{len(d)}B，status={st_name(d[0]) if d else '空'}）"
                 f"—— 对端疑似 APP 而非 BL")
     ma, mi, pa = d[1], d[2], d[3]
@@ -566,96 +568,101 @@ def main():
     a = build_parser().parse_args()
 
     if a.command == "selftest":
-        sys.exit(selftest(BootLoader(a.port, a.baud, a.pace)))
+        sys.exit(selftest(BootLoader(a.port, a.baud, a.pace, a.conn)))
 
     bl = BootLoader(a.port, a.baud, a.pace, a.conn)
-    if a.command == "ping":
-        r = bl.cmd("ping")
-        print("无响应" if r is None else
-              f"status={st_name(r['data'][0])} proto_ver={r['data'][1]:#04x}")
-    elif a.command == "info":
-        r = bl.cmd("info")
-        print("无响应" if r is None else parse_info(r["data"]))
-    elif a.command == "ota":
-        r = bl.cmd("ota", timeout=2.0)
-        if r is None:
-            print("无响应")
-        else:
-            try:
-                print(parse_ota(r["data"]))
-            except RuntimeError as e:
-                print(f"ota: {e}")
-    elif a.command == "meta":
-        r = bl.cmd("get_meta")
-        print("无响应" if r is None else meta_str(parse_meta(r["data"])))
-    elif a.command == "erase":
-        t0 = time.time()
-        r = bl.cmd("erase", timeout=8.0)
-        print("无响应" if r is None else
-              f"erase: {st_name(r['data'][0])} 耗时={time.time() - t0:.2f}s")
-    elif a.command == "upgrade":
-        if not a.arg:
-            sys.exit("用法：upgrade <镜像文件>")
-        sys.exit(cmd_upgrade(bl, a.arg))
-    elif a.command == "verify":
-        if not a.arg or not a.arg2:
-            sys.exit("用法：verify <size> <crc32_hex>")
-        r = bl.cmd("verify", struct.pack("<II", int(a.arg, 0), int(a.arg2, 16)),
-                   timeout=3.0)
-        print("无响应" if r is None else
-              f"verify: {st_name(r['data'][0])}")
-    elif a.command == "listen":
-        secs = float(a.arg) if a.arg else 3.0
-        t0 = time.time()
-        buf = bytearray()
-        while time.time() - t0 < secs:
-            chunk = bl.s.read(256)
-            if chunk:
-                buf += chunk
-        text = buf.decode("utf-8", "replace")
-        if text.strip():
-            print(text, end="")
-        print(f"({secs:.0f}s 监听结束)")
-    elif a.command == "raw":
-        if not a.arg:
-            sys.exit("用法：raw <hex 字节，如 42>")
-        data = bytes.fromhex(a.arg.replace(" ", ""))
-        bl.send_raw(data)
-        print(f"已发送 {len(data)}B 原始字节")
-    elif a.command == "setmeta":
-        if not a.arg or not a.arg2:
-            sys.exit("用法：setmeta <field_hex> <value_hex>")
-        r = bl.cmd("set_meta", bytes([int(a.arg, 16), int(a.arg2, 16)]))
-        print("无响应" if r is None else
-              f"set_meta({a.arg},{a.arg2}): {st_name(r['data'][0])}")
-        t0 = time.time()
-        buf = bytearray()
-        while time.time() - t0 < 3.0:
-            chunk = bl.s.read(256)
-            if chunk:
-                buf += chunk
-        text = buf.decode("utf-8", "replace")
-        if text.strip():
-            print("--- 后续串口输出 ---\n" + text, end="")
-    elif a.command in ("jump", "reset"):
-        follow = 6.0 if a.command == "reset" else 2.5
-        r = bl.cmd(a.command, timeout=2.0)
-        if r is None:
-            print(f"{a.command}: 无响应")
-            return
-        print(f"{a.command}: {st_name(r['data'][0])}"
-              + ("（APP 无效被拒绝）" if r["data"][0] == 0x04 else ""))
-        if r["data"][0] != 0x00:
-            return
-        t0 = time.time()
-        buf = bytearray()
-        while time.time() - t0 < follow:
-            chunk = bl.s.read(256)
-            if chunk:
-                buf += chunk
-        text = buf.decode("utf-8", "replace")
-        if text.strip():
-            print("--- 串口输出 ---\n" + text, end="")
+    try:
+        if a.command == "ping":
+            r = bl.cmd("ping")
+            print("无响应" if r is None else
+                  f"status={st_name(r['data'][0])} proto_ver={r['data'][1]:#04x}")
+        elif a.command == "info":
+            r = bl.cmd("info")
+            print("无响应" if r is None else parse_info(r["data"]))
+        elif a.command == "ota":
+            r = bl.cmd("ota", timeout=2.0)
+            if r is None:
+                print("无响应")
+            else:
+                try:
+                    print(parse_ota(r["data"]))
+                except RuntimeError as e:
+                    print(f"ota: {e}")
+        elif a.command == "meta":
+            r = bl.cmd("get_meta")
+            print("无响应" if r is None else meta_str(parse_meta(r["data"])))
+        elif a.command == "erase":
+            t0 = time.time()
+            r = bl.cmd("erase", timeout=8.0)
+            print("无响应" if r is None else
+                  f"erase: {st_name(r['data'][0])} 耗时={time.time() - t0:.2f}s")
+        elif a.command == "upgrade":
+            if not a.arg:
+                sys.exit("用法：upgrade <镜像文件>")
+            sys.exit(cmd_upgrade(bl, a.arg))
+        elif a.command == "verify":
+            if not a.arg or not a.arg2:
+                sys.exit("用法：verify <size> <crc32_hex>")
+            r = bl.cmd("verify", struct.pack("<II", int(a.arg, 0), int(a.arg2, 16)),
+                       timeout=3.0)
+            print("无响应" if r is None else
+                  f"verify: {st_name(r['data'][0])}")
+        elif a.command == "listen":
+            secs = float(a.arg) if a.arg else 3.0
+            t0 = time.time()
+            buf = bytearray()
+            while time.time() - t0 < secs:
+                chunk = bl.s.read(256)
+                if chunk:
+                    buf += chunk
+            text = buf.decode("utf-8", "replace")
+            if text.strip():
+                print(text, end="")
+            print(f"({secs:.0f}s 监听结束)")
+        elif a.command == "raw":
+            if not a.arg:
+                sys.exit("用法：raw <hex 字节，如 42>")
+            data = bytes.fromhex(a.arg.replace(" ", ""))
+            bl.send_raw(data)
+            print(f"已发送 {len(data)}B 原始字节")
+        elif a.command == "setmeta":
+            if not a.arg or not a.arg2:
+                sys.exit("用法：setmeta <field_hex> <value_hex>")
+            r = bl.cmd("set_meta", bytes([int(a.arg, 16), int(a.arg2, 16)]))
+            print("无响应" if r is None else
+                  f"set_meta({a.arg},{a.arg2}): {st_name(r['data'][0])}")
+            t0 = time.time()
+            buf = bytearray()
+            while time.time() - t0 < 3.0:
+                chunk = bl.s.read(256)
+                if chunk:
+                    buf += chunk
+            text = buf.decode("utf-8", "replace")
+            if text.strip():
+                print("--- 后续串口输出 ---\n" + text, end="")
+        elif a.command in ("jump", "reset"):
+            follow = 6.0 if a.command == "reset" else 2.5
+            r = bl.cmd(a.command, timeout=2.0)
+            if r is None:
+                print(f"{a.command}: 无响应")
+                return
+            print(f"{a.command}: {st_name(r['data'][0])}"
+                  + ("（APP 无效被拒绝）" if r["data"][0] == 0x04 else ""))
+            if r["data"][0] != 0x00:
+                return
+            t0 = time.time()
+            buf = bytearray()
+            while time.time() - t0 < follow:
+                chunk = bl.s.read(256)
+                if chunk:
+                    buf += chunk
+            text = buf.decode("utf-8", "replace")
+            if text.strip():
+                print("--- 串口输出 ---\n" + text, end="")
+    except (RuntimeError, IndexError) as e:
+        # 对端返回 CRC 合法但长度异常的响应时的兜底（审计 2026-09-29 P3-2）：
+        # 现网 BL/APP 不会产生此类响应，友好退出而非栈回溯
+        sys.exit(f"[X] {e}")
 
 
 if __name__ == "__main__":
