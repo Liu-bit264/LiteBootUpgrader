@@ -21,6 +21,25 @@
   与断电钻具的 pyocd 目标名均硬编码 F103（F411 上 selftest 的「越界防护」步假 FAIL、
   钻具不可用）
 
+## [1.3.1] - 2026-09-30
+
+审计 2026-09-29（主仓 `docs/review/audit-2026-09-29.md`，本地文档）修复。协议 VER 0x01
+不变。
+
+### Fixed
+
+- **selftest 补传 `--conn`**（审计 P2-3）：`selftest --conn bt` 此前静默退化为
+  1 次打开尝试（打开重试逻辑由 `conn` 决定），蓝牙 SPP 重连竞态下首开易失败；
+  GUI 路径本就正确，仅 CLI 分发漏传
+- **`parse_info` 短响应守卫 19→31 B**（审计 P3-2）：19~30 B 的 CRC 合法但长度异常
+  响应原本落入 `unpack_from(d, 19)` 触发 `struct.error` 栈回溯退出；现归入
+  「短响应」提示，且 CLI 分发层统一兜底 `RuntimeError/IndexError` 友好退出
+  （现网 BL/APP 不会产生此类响应，防御性加固）
+
+### Changed
+
+- 主机侧单测扩至 34 项（parse_info 30B 防御、selftest `--conn` 传参断言）
+
 ## [1.3.0] - 2026-09-27
 
 配套固件仓 LiteBootLoader 0.2.0《空口蓝牙串口及OTA》（ADR-016）。

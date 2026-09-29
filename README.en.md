@@ -140,7 +140,7 @@ Artifacts land in `dist\` (`build/` and `*.spec` are intermediates, not committe
 
 ## Version & License
 
-Current version **v1.3.0**; history and change details in [CHANGELOG.md](CHANGELOG.md).
+Current version **v1.3.1**; history and change details in [CHANGELOG.md](CHANGELOG.md).
 
 [MIT](LICENSE) © 2026 Qingc. LiteBootLoader is also MIT-licensed (its bundled
 third_party/CMSIS retains its original license, see its LICENSES.md).
