@@ -8,8 +8,8 @@ CRC 覆盖 VER..DATA；响应 CMD = 请求 CMD|0x80，DATA[0] = 状态码。
 连接类型：--conn serial（有线串口，默认）| bt（蓝牙 SPP/HC-05，打开失败自动重试）；
 模块需一次性 AT 配置数据模式到 115200（主仓 docs/dev/bluetooth_notes.md §5）。
 
-主机侧重试约定（protocol.md §7）：单命令响应超时 1000 ms（ERASE/VERIFY 5000 ms），
-超时后重发至多 3 次，重试间隔 ≥2.1 s（等待 BL 帧内 2000 ms 超时复位解析器）。
+主机侧重试约定（protocol.md §6）：单命令响应超时 1000 ms（ERASE/VERIFY 5000 ms），
+超时后重发至多 3 次尝试（首发 1 + 重发 ≤2），重试间隔 2.2 s（等待 BL 帧内 2000 ms 超时复位解析器）。
 upgrade 会自动识别对端：若 APP 正在运行，先走"请求回 BL"流程（SET_META bl_request）
 再升级——从任意状态一条命令完成升级。
 
@@ -38,7 +38,7 @@ STATUS = {0x00: "OK", 0x01: "CRC_ERROR", 0x02: "FLASH_ERROR",
 APP_SIZE = 0xB800          # 46 KiB（board_config.h BL_APP_SIZE）
 CHUNK_PAYLOAD = 252        # DATA ≤ 256B，WRITE_CHUNK 头占 4B
 
-# 主机侧重试约定（protocol.md §7）：超时重发 ≤3 次，间隔 ≥2.1s 等 BL 解析器复位
+# 主机侧重试约定（protocol.md §6）：超时重发至多 3 次尝试，间隔 2.2 s 等 BL 解析器复位
 RETRY_ATTEMPTS = 3
 RETRY_DELAY = 2.2
 T_DEFAULT, T_ERASE, T_VERIFY = 1.0, 5.0, 5.0
