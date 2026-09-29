@@ -2,6 +2,22 @@
 
 本项目的所有显著变更记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer 2.0.0](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Changed
+
+- 文档同步固件仓 BL 0.3.0（ADR-019：服务可选挂载与默认示例配置最小化）：
+  「已验证组合」更新为 BL 0.3.0 + STM32F103C8T6（全流程）/ STM32F411CEU6 最小包
+  （info/upgrade/jump/setmeta 回环）；补充「蓝牙连接需固件启用蓝牙通道」前提；
+  镜像上限说明标注 F411 已验证但仍受 46K 上限约束
+
+### Notes
+
+- 本次代码无需改动：升级协议 VER 0x01 未变（帧格式/命令/状态码均不变）
+- 待办（跨仓 follow-up）：`--chip` 参数化——`bl_upgrade.py` 的 `APP_SIZE=0xB800`
+  与断电钻具的 pyocd 目标名均硬编码 F103（F411 上 selftest 第 9 步假 FAIL、
+  钻具不可用）
+
 ## [1.3.0] - 2026-09-27
 
 配套固件仓 LiteBootLoader 0.2.0《空口蓝牙串口及OTA》（ADR-016）。
