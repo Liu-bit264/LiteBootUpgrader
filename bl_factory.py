@@ -5,6 +5,9 @@
 一次「开工」= 一个会话：等设备 → 探查芯片 → 选预设镜像 → 体检 → （跳过判定）→
 烧录校验 → 收尾（写 APP 版本 / 跳转）→ 记录 → 等换板 → ……直到停止或达到台数上限。
 
+BatchSession 是**单端口**会话；一台机器插多个串口时用 MultiSession 把它们并行跑起来
+（每端口一个独立会话，共享记录文件与停止信号）。
+
 换板触发（两种，界面/命令行可切换）：
   poll    —— 同端口轮询（默认）：适配器共用一根线、COM 口常驻的夹具。靠 PING 应答判断
              设备在否，靠 **UID 变化** 或「失联后重现」识别下一块板。
@@ -21,8 +24,9 @@
 import csv
 import json
 import os
+import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import bl_chip
@@ -49,6 +53,24 @@ def _iso(ts: float) -> str:
 def _list_ports() -> list:
     import serial.tools.list_ports
     return [p.device for p in serial.tools.list_ports.comports()]
+
+
+def _open_reason(msg: str) -> str:
+    """从「打开 X 失败：…」里取出人话原因。
+    BootLoader 打开失败时自己就带这层前缀，直接拼会叠成两层，这里剥干净。"""
+    s = msg
+    for _ in range(4):
+        t = s
+        if t.startswith("[X] "):
+            t = t[4:]
+        if t.startswith("打开 "):
+            cut = t.find("失败：")
+            if cut >= 0:
+                t = t[cut + len("失败："):]
+        if t == s:
+            break
+        s = t
+    return s
 
 
 def _default_open(port: str):
@@ -91,11 +113,16 @@ class Summary:
 
 
 class RecordWriter:
-    """结果落盘：CSV（utf-8-sig，Excel 友好）+ 可选 JSONL（机器可读）。追加写。"""
+    """结果落盘：CSV（utf-8-sig，Excel 友好）+ 可选 JSONL（机器可读）。追加写。
+
+    多端口并行时被多个会话线程共享，写入与读回都加锁——表头判定与整行 append
+    必须在同一把锁内，否则两个端口同时开工可能写出两条表头或半行。
+    """
 
     def __init__(self, csv_path: str | None = None, jsonl_path: str | None = None):
         self.csv_path = csv_path
         self.jsonl_path = jsonl_path
+        self._lock = threading.Lock()
 
     def _mkdir(self, path: str):
         d = os.path.dirname(os.path.abspath(path))
@@ -103,34 +130,37 @@ class RecordWriter:
             os.makedirs(d, exist_ok=True)
 
     def write(self, rec: dict) -> None:
-        if self.csv_path:
-            new = (not os.path.isfile(self.csv_path)
-                   or os.path.getsize(self.csv_path) == 0)
-            self._mkdir(self.csv_path)
-            with open(self.csv_path, "a", newline="",
-                      encoding="utf-8-sig" if new else "utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
-                if new:
-                    w.writeheader()
-                w.writerow(rec)
-        if self.jsonl_path:
-            self._mkdir(self.jsonl_path)
-            with open(self.jsonl_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        with self._lock:
+            if self.csv_path:
+                new = (not os.path.isfile(self.csv_path)
+                       or os.path.getsize(self.csv_path) == 0)
+                self._mkdir(self.csv_path)
+                with open(self.csv_path, "a", newline="",
+                          encoding="utf-8-sig" if new else "utf-8") as f:
+                    w = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
+                    if new:
+                        w.writeheader()
+                    w.writerow(rec)
+            if self.jsonl_path:
+                self._mkdir(self.jsonl_path)
+                with open(self.jsonl_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
     def done_uids(self) -> set:
         """既有记录里成功烧录过的 UID（断点续烧用）。"""
         out = set()
-        if self.csv_path and os.path.isfile(self.csv_path):
-            try:
-                with open(self.csv_path, newline="", encoding="utf-8-sig") as f:
-                    for row in csv.DictReader(f):
-                        if (row.get("result") or "").strip() == RESULT_OK:
-                            uid = (row.get("uid") or "").strip().upper()
-                            if uid:
-                                out.add(uid)
-            except OSError:
-                pass
+        with self._lock:
+            if self.csv_path and os.path.isfile(self.csv_path):
+                try:
+                    with open(self.csv_path, newline="",
+                              encoding="utf-8-sig") as f:
+                        for row in csv.DictReader(f):
+                            if (row.get("result") or "").strip() == RESULT_OK:
+                                uid = (row.get("uid") or "").strip().upper()
+                                if uid:
+                                    out.add(uid)
+                except OSError:
+                    pass
         return out
 
     def close(self) -> None:
@@ -138,8 +168,9 @@ class RecordWriter:
 
 
 class BatchSession:
-    """批量会话。回调：log(msg) / on_state(code, text) / on_progress(done,total)
-    / on_unit_start(rec) / on_unit(rec)。"""
+    """单端口批量会话。回调：log(msg) / on_state(code, text) / on_progress(done,total)
+    / on_unit_start(rec) / on_unit(rec)。
+    （多端口见 MultiSession：它的 on_state/on_progress 多一个 port 形参。）"""
 
     def __init__(self, profiles: dict, options: Options, open_fn=None,
                  list_ports_fn=None, records: RecordWriter | None = None,
@@ -222,7 +253,7 @@ class BatchSession:
         try:
             bl = self._open(port)
         except (Exception, SystemExit) as e:
-            self.summary.halted = f"打开 {port} 失败：{e}"
+            self.summary.halted = f"打开 {port} 失败：{_open_reason(str(e))}"
             self._log(f"[X] {self.summary.halted}")
             return
         try:
@@ -456,3 +487,145 @@ class BatchSession:
             self.summary.halted = reason
             self._log("[!] 未配置该芯片的预设镜像，会话停止（补齐后可重新开工）")
         return rec
+
+
+class MultiSession:
+    """多端口并行批量：一台机器插多个串口（多夹具/多转换器）时，每个端口跑一个
+    独立 BatchSession，同时烧各自的板子。
+
+    与单端口会话的差别只在编排，不在流程：
+      - **隔离**：各端口会话互不影响——一个端口烧失败、打不开、板子没插，都不牵累
+        其他端口（打开失败只结束该端口，日志留痕）；
+      - **停止是广播的**：`request_stop(immediate)` 同时下发给所有端口，语义与单端口
+        一致（软停=各端口烧完当前台即停；立即停=打断进行中的升级）；
+      - **记录共享**：同一个 RecordWriter（内部加锁），多端口落盘不会写出两条表头
+        或半行；断点续烧的既有 UID 集合只读一次，广播给所有端口；
+      - **台数上限**：多端口时按**会话汇总**计数（否则每个端口各烧 count 台）；
+        上限触发的是软停，已在烧的那几台会烧完，所以最终可能超出 端口数-1 台。
+
+    端口级 vs 会话级中止：`打开 <port> 失败` 属端口级（只结束该端口）；其余（如
+    探查到的芯片没配预设镜像）属配置级，会停掉整批——同一套配置下别的端口也会撞上。
+    """
+
+    def __init__(self, profiles: dict, options: Options, ports,
+                 open_fn=None, list_ports_fn=None, records: RecordWriter | None = None,
+                 log=None, on_state=None, on_progress=None,
+                 on_unit_start=None, on_unit=None,
+                 sleep=time.sleep, now=time.time):
+        self.profiles = profiles
+        self.opt = options
+        self.ports = [p for p in ports if p]
+        self.records = records
+        self._open = open_fn or _default_open
+        self._list_ports = list_ports_fn or _list_ports
+        self._log = log or (lambda m: None)
+        self._on_state = on_state or (lambda port, code, text: None)
+        self._on_progress = on_progress
+        self._on_unit_start = on_unit_start or (lambda rec: None)
+        self._on_unit = on_unit or (lambda rec: None)
+        self._sleep = sleep
+        self._now = now
+        self._lock = threading.Lock()
+        self._stop = False
+        self._immediate = False
+        self._units = 0
+        self.failed_ports = {}         # 打不开的端口 → 原因（CLI 据此报错退出）
+        self.subs = {}                 # port -> BatchSession（GUI 侧只读；停止走本类）
+        self.summary = Summary()
+
+    # ---- 控制 ----
+
+    @property
+    def stop_requested(self) -> bool:
+        return self._stop
+
+    def request_stop(self, immediate: bool = False):
+        if self._stop and not immediate:
+            return
+        self._stop = True
+        self._immediate = self._immediate or immediate
+        self._log("[!] 已请求停止"
+                  + ("（立即，各端口正在进行的升级一并中止）" if immediate
+                     else "（各端口当前台完成后）"))
+        for s in list(self.subs.values()):
+            s.request_stop(immediate)
+
+    # ---- 主流程 ----
+
+    def run(self) -> Summary:
+        t0 = self._now()
+        n = len(self.ports)
+        self._log(f"多端口并行：{', '.join(self.ports)}（{n} 个端口各自独立会话，"
+                  f"互不影响）")
+        if n > 1 and self.opt.count:
+            self._log(f"台数上限 {self.opt.count} 按**汇总**计（先烧完的端口先记，"
+                      f"达到上限后各端口收尾即停）")
+        threads = []
+        for p in self.ports:
+            sub = self._make_sub(p)
+            self.subs[p] = sub
+            if self._stop:                  # 开工前/中途已请求停止：新会话也照办
+                sub.request_stop(self._immediate)
+            t = threading.Thread(target=self._run_sub, args=(p, sub), daemon=True,
+                                 name=f"factory-{p}")
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join()
+        self.summary.elapsed_s = max(0.0, self._now() - t0)
+        if len(self.failed_ports) == len(self.ports) and self.ports:
+            # 一个口都打不开：这不是「批量跑完 0 台」，是环境问题，得让上层报错
+            self.summary.halted = ("所有端口都打不开（"
+                                   + "；".join(f"{p}：{r}"
+                                              for p, r in self.failed_ports.items())
+                                   + "）——检查串口是否被占用/是否插好")
+            self._log(f"[X] {self.summary.halted}")
+        return self.summary
+
+    def _make_sub(self, port: str) -> BatchSession:
+        # 多端口时台数上限由本类按汇总判定，子会话不再各自计数
+        opt = replace(self.opt, count=0) if len(self.ports) > 1 else self.opt
+        return BatchSession(
+            self.profiles, opt, open_fn=self._open, list_ports_fn=self._list_ports,
+            records=self.records, log=self._log,
+            on_state=lambda code, text, p=port: self._on_state(p, code, text),
+            on_progress=(None if self._on_progress is None else
+                         (lambda done, total, p=port:
+                          self._on_progress(p, done, total))),
+            on_unit_start=self._on_unit_start,
+            on_unit=lambda rec, p=port: self._unit_done(p, rec),
+            sleep=self._sleep, now=self._now)
+
+    def _run_sub(self, port: str, sub: BatchSession):
+        try:
+            s = sub.run(port)
+        except (Exception, SystemExit) as e:      # 单端口异常不牵累其他端口
+            self._log(f"[X] 端口 {port} 会话异常：{e}")
+            return
+        with self._lock:
+            self.summary.ok += s.ok
+            self.summary.skip += s.skip
+            self.summary.fail += s.fail
+            self.summary.total += s.total
+            if not s.halted:
+                return
+            if s.halted.startswith("打开 "):
+                self._log(f"[!] 端口 {port} 结束：{s.halted}（其余端口照常）")
+                self.failed_ports[port] = _open_reason(s.halted)
+            elif not self.summary.halted:
+                self.summary.halted = f"{port}: {s.halted}"
+        if not s.halted.startswith("打开 ") and not self._stop:
+            # 配置级问题（如缺预设镜像）对所有端口同样成立：停整批，别接着烧
+            self._log("[!] 该问题对所有端口同样成立，整批停止")
+            self.request_stop()
+
+    def _unit_done(self, port: str, rec: dict):
+        if not rec.get("port"):
+            rec["port"] = port
+        with self._lock:
+            self._units += 1
+        self._on_unit(rec)
+        if self.opt.count and not self._stop and len(self.ports) > 1 \
+                and self._units >= self.opt.count:
+            self._log(f"[!] 已达台数上限 {self.opt.count}，各端口收尾后停止")
+            self.request_stop()

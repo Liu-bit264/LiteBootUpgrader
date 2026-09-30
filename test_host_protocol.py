@@ -897,6 +897,145 @@ def t_factory_engine():
               str(lines[:1]))
 
 
+def t_factory_multiport():
+    """多端口并行批量（1.5.0）：一台机器插多个串口 → 每端口一个独立会话并行烧。
+    覆盖：并行两端口各自成功 / 汇总计数 / 记录文件单表头双行 / 端口打不开只丢该口 /
+    停止广播 / 台数上限按汇总计。"""
+    f1 = bc.load_profiles(firmware_root=_no_fw_root(), cfg={})["f103c8t6"]
+    img = struct.pack("<II", 0x20005000, 0x08004105) + b"\x00" * 56
+    img_crc = zlib.crc32(img) & 0xFFFFFFFF
+    quiet = lambda *a: None
+
+    def make_bl(uid_v, verify_st=0):
+        state = {"writes": 0, "verify": 0, "jump": 0}
+
+        def handler(c, s, payload):
+            if c == C_INFO:
+                return info_payload(uid=uid_v, flash_kib=64, app_valid=0,
+                                    app_size=len(img), app_crc=0)
+            if c == C_PING:
+                return bytes([0x00, 0x01])
+            if c == C_ERASE:
+                return bytes([0x00])
+            if c == C_WRITE:
+                state["writes"] += 1
+                return bytes([0x00])
+            if c == C_VERIFY:
+                state["verify"] += 1
+                return bytes([verify_st]) + struct.pack("<II", img_crc, len(img))
+            if c == C_JUMP:
+                state["jump"] += 1
+                return bytes([0x00])
+            return None
+
+        return make_echo_bl(handler), state
+
+    with tempfile.TemporaryDirectory() as td:
+        path_bin = os.path.join(td, "app.bin")
+        Path(path_bin).write_bytes(img)
+        recs = []
+
+        def make_multi(ports, bls, **optkw):
+            optkw.setdefault("chip_id", "auto")
+            optkw.setdefault("trigger", "poll")
+            optkw.setdefault("image_map", {"f103c8t6": path_bin})
+            opts = bf.Options(**optkw)
+            sess = bf.MultiSession(
+                {"f103c8t6": f1}, opts, ports, open_fn=lambda p: bls[p][0],
+                records=None, log=quiet, on_unit=lambda r: recs.append(dict(r)),
+                sleep=lambda s: None)
+            return sess
+
+        uid_a = bytes.fromhex("C3" * 12)
+        uid_b = bytes.fromhex("D4" * 12)
+        bls = {"COM10": make_bl(uid_a), "COM11": make_bl(uid_b)}
+        rec = os.path.join(td, "records.csv")
+        del recs[:]
+        sess = make_multi(["COM10", "COM11"], bls, count=2)
+        sess.records = bf.RecordWriter(rec, None)
+        summary = sess.run()
+        st10, st11 = bls["COM10"][1], bls["COM11"][1]
+        ports_done = sorted(r.get("port") for r in recs)
+        check("多端口：两端口并行各烧一台（各自擦写校验跳转）",
+              summary.ok == 2 and summary.fail == 0
+              and st10["writes"] == 1 and st11["writes"] == 1
+              and st10["jump"] == 1 and st11["jump"] == 1,
+              f"{summary} ports={ports_done}")
+        check("多端口：结果按端口区分（每台一条、端口不串）",
+              ports_done == ["COM10", "COM11"]
+              and len({r.get("uid") for r in recs}) == 2,
+              str(ports_done))
+        lines = [ln for ln in Path(rec).read_text(encoding="utf-8-sig").splitlines()
+                 if ln.strip()]
+        check("多端口：共享记录文件只有一条表头（多线程落盘不打架）",
+              len(lines) == 3 and lines[0].startswith("seq,"), f"{len(lines)} 行")
+
+        # 台数上限按会话汇总计：子会话的 count 被清零，由 MultiSession 判汇总
+        del recs[:]
+        bls = {"COM10": make_bl(uid_a), "COM11": make_bl(uid_b)}
+        sess = make_multi(["COM10", "COM11"], bls, count=1)
+        summary = sess.run()
+        subs = list(sess.subs.values())
+        check("多端口：台数上限按会话汇总（不是每口各烧 count 台）",
+              1 <= summary.total <= 2 and sess.stop_requested
+              and all(s.opt.count == 0 for s in subs)
+              and len(recs) == summary.total,
+              f"{summary} 子会话 count={[s.opt.count for s in subs]}")
+
+        # 端口打不开只结束该端口，不牵累其他端口
+        del recs[:]
+        bls = {"COM10": make_bl(uid_a), "COM12": make_bl(uid_b)}
+
+        def open_fn(p):
+            if p == "COM12":
+                raise OSError("拒绝访问")
+            return bls[p][0]
+
+        sess = bf.MultiSession({"f103c8t6": f1},
+                               bf.Options(chip_id="auto", trigger="poll", count=1,
+                                          image_map={"f103c8t6": path_bin}),
+                               ["COM12", "COM10"], open_fn=open_fn, log=quiet,
+                               on_unit=lambda r: recs.append(dict(r)),
+                               sleep=lambda s: None)
+        summary = sess.run()
+        check("多端口：端口打不开只丢该口（其余端口照常烧）",
+              summary.ok == 1 and summary.fail == 0 and not summary.halted
+              and bls["COM10"][1]["writes"] == 1, str(summary))
+
+        # 停止广播到所有端口（开工前请求 → 谁都不烧）
+        bls = {"COM10": make_bl(uid_a), "COM11": make_bl(uid_b)}
+        sess = make_multi(["COM10", "COM11"], bls)
+        sess.request_stop()
+        summary = sess.run()
+        check("多端口：停止广播（开工前请求 → 各端口都不烧）",
+              summary.total == 0 and bls["COM10"][1]["writes"] == 0
+              and bls["COM11"][1]["writes"] == 0, str(summary))
+
+        # 单端口（N=1）走同一入口：行为与 BatchSession 一致（台数上限在子会话里生效）
+        bls = {"COM10": make_bl(uid_a)}
+        sess = make_multi(["COM10"], bls, count=1)
+        summary = sess.run()
+        check("多端口：单端口入口与单会话行为一致（烧 1 台即停）",
+              summary.ok == 1 and bls["COM10"][1]["writes"] == 1, str(summary))
+
+        # 所有端口都打不开 → 报环境问题（CLI 据此非零退出，不当成「跑完 0 台」）；
+        # 原因要剥掉嵌套前缀（BootLoader 自己会带「打开 X 失败：」，直接拼会叠两层）
+        def bad_open(p):
+            raise OSError("串口被占用")
+
+        sess = bf.MultiSession({"f103c8t6": f1},
+                               bf.Options(chip_id="auto", trigger="poll"),
+                               ["COM30", "COM31"], open_fn=bad_open, log=quiet,
+                               sleep=lambda s: None)
+        summary = sess.run()
+        check("多端口：所有端口都打不开 → 会话中止且原因不叠前缀",
+              bool(summary.halted) and summary.total == 0
+              and set(sess.failed_ports) == {"COM30", "COM31"}
+              and all("打开" not in r and not r.startswith("[X]")
+                      for r in sess.failed_ports.values()),
+              f"{summary} failed={sess.failed_ports}")
+
+
 def t_gui_modes():
     """GUI 模式矩阵：工厂与高级互相独立、可共存、互不夹带（1.5.0）。"""
     import tkinter as tk
@@ -924,17 +1063,41 @@ def t_gui_modes():
             if fac:
                 ok = ok and app.btn_f_start in app.lock_btns \
                      and app.btn_f_stop not in app.lock_btns
-            # 版式：内容必须装得进窗口（宽度不足会静默裁掉右侧控件——1.5.0 修复项）
+            # 版式：内容必须装得进窗口（宽度不足会静默裁掉右侧控件——1.5.0 修复项）。
+            # 窗口尺寸取 app.win_w/win_h（= geometry 实际下发的尺寸；未显示的窗口
+            # winfo_width 报的是自然尺寸，不能当窗口尺寸用）
             rw, rh = root.winfo_reqwidth(), root.winfo_reqheight()
-            w, h = root.winfo_width(), root.winfo_height()
-            fit = rw <= w and rh <= h
+            fit = rw <= app.win_w and rh <= app.win_h
             detail = (f"高级面板={has_adv} 工厂面板={has_fac} 基础操作={has_ops}；"
-                      f"版式 内容{rw}x{rh} ≤ 窗口{w}x{h} {'✓' if fit else '✗ 溢出'}")
+                      f"版式 内容{rw}x{rh} ≤ 窗口{app.win_w}x{app.win_h} "
+                      f"{'✓' if fit else '✗ 溢出'}")
             ok = ok and fit
         finally:
             app._closing = True
             root.destroy()
         check(f"GUI 模式矩阵 advanced={adv} factory={fac}", ok, detail)
+
+    # 小屏（150% 缩放的 1080p 逻辑高度 ~640）：窗口按屏幕收敛 + 面板区滚动，
+    # 而不是把下半截控件切在窗口外
+    for adv, fac in ((False, True), (True, True)):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = gui.App(root, advanced=adv, factory=fac)
+            app.win_h = 640
+            app._fit_layout()
+            root.update()
+            fit = root.winfo_reqheight() <= app.win_h
+            scrolled = bool(app.page_sb.winfo_manager())
+            panels_need = app.page_inner.winfo_reqheight() > app._page_h
+            ok = fit and scrolled and panels_need and app._page_h >= gui.PAGE_MIN_H
+            detail = (f"窗口 {app.win_w}x{app.win_h}；内容高 {root.winfo_reqheight()}；"
+                      f"面板 {app.page_inner.winfo_reqheight()}→{app._page_h}；"
+                      f"滚动条 {'有' if scrolled else '无'}")
+        finally:
+            app._closing = True
+            root.destroy()
+        check(f"小屏版式 advanced={adv} factory={fac}（滚动替代裁剪）", ok, detail)
 
     root = tk.Tk()
     root.withdraw()
@@ -953,29 +1116,106 @@ def t_gui_modes():
     check("GUI 工厂选项只取工厂面板值（不读高级的波特率/pace/私钥）", ok,
           f"key={opts.key_path!r} trigger={opts.trigger}")
 
+    # 串口多选：一台机器插很多个 → 多选列表 + 全选/清空；开工把全部选中端口交给引擎
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = gui.App(root, advanced=False, factory=True)
+        app.port_list = ["COM10", "COM11", "COM12"]
+        app.port_lb.delete(0, "end")
+        for p in app.port_list:
+            app.port_lb.insert("end", p)
+        multi_ok = str(app.port_lb.cget("selectmode")) == "extended"
+        no_auto = not hasattr(app, "f_auto")     # 从未被读取的「自动开工」已移除
+        app.port_select(all_=True)
+        all_sel = app.selected_ports()
+        app.port_select(all_=False)
+        none_sel = app.selected_ports()
+        app.port_lb.selection_set(1)
+        app.port_lb.selection_set(2)
+        app._port_sel_changed()
+        pick = app.selected_ports()
+        check("GUI 串口多选：全选/清空/多选生效（port_var 跟首个）",
+              multi_ok and no_auto and all_sel == app.port_list and none_sel == []
+              and pick == ["COM11", "COM12"] and app.port_var.get() == "COM11",
+              f"全选={all_sel} 清空={none_sel} 手动={pick}")
+
+        # 状态栏在结果表右侧（原地：整行计数/大字状态；现改为右侧竖列）
+        right = app.unit_tv.master is app.progress.master.master
+        fresh_no_port = app.port_stat.winfo_manager() == ""
+
+        # 开工：把选中的端口全部交给工作线程（含多端口并行提示）
+        seen = {}
+        app.cur_profiles = {"f103c8t6": None}
+        app.f_effective_images = {"f103c8t6": __file__}
+        app.start_worker = lambda fn, *a: seen.setdefault("args", a)
+        app.do_batch_start()
+        got = seen.get("args", ())[0] if seen.get("args") else []
+        check("GUI 开工：多选端口全部下发（N 个端口 → N 个并行会话）",
+              got == ["COM11", "COM12"] and app.cur_ports == ["COM11", "COM12"]
+              and str(app.f_sel_var.get()).startswith("已选 2"),
+              f"下发={got}")
+
+        app._render_port_states(["COM11", "COM12"])
+        multi_rows = (app.port_stat.winfo_manager() == "pack"
+                      and len(app.port_stat.winfo_children()) == 2
+                      and set(app.f_port_vars) == {"COM11", "COM12"})
+        app._render_port_states(["COM11"])
+        single_hidden = app.port_stat.winfo_manager() == ""
+        check("GUI 状态栏在结果表右侧（单口不占位、多口逐口状态）",
+              right and fresh_no_port and multi_rows and single_hidden,
+              f"right={right} 单口不占位={fresh_no_port and single_hidden}")
+
+        # 队列消息形态（多端口）：逐口状态 + 汇总大字 + 带端口的进度与结果行
+        app.cur_ports = ["COM11", "COM12"]
+        app._render_port_states(app.cur_ports)
+        app.q.put(("fstate", "COM11", "flash", "烧录 app.bin → f103c8t6"))
+        app.q.put(("progress", "COM11", 64, 256))
+        app.q.put(("unit_row", {"seq": 1, "port": "COM12", "started": "2026-09-30 10:00:00",
+                                "chip_id": "f103c8t6", "uid": "AABB", "image": "a.bin",
+                                "result": "OK", "elapsed_s": "3.0", "reason": ""}))
+        app.pump()                       # 直接跑一轮泵（不依赖 mainloop）
+        rows = app.unit_tv.get_children()
+        vals = app.unit_tv.item(rows[-1], "values") if rows else ()
+        agg = app.f_state_var.get()
+        ok_msg = ("COM11" in app.f_port_vars["COM11"].get()
+                  and app.progress["value"] == 25
+                  and "端口" in agg and app.status.get().startswith("COM11")
+                  and app.f_counts["ok"] == 1 and vals[1] == "COM12"
+                  and vals[2] == "10:00:00")
+        check("GUI 多端口消息：逐口状态/汇总大字/端口进度/结果行计数",
+              ok_msg, f"大字={agg!r} 进度={app.progress['value']} 行={vals}")
+    finally:
+        app._closing = True
+        root.destroy()
+
     root = tk.Tk()
     root.withdraw()
     try:
         app = gui.App(root, advanced=False, factory=True)
         # 结果表行号跨会话唯一：两次会话的 seq 都从 1 开始，不能互相覆盖
-        row = {"seq": 1, "started": "t1", "chip_id": "f103c8t6", "uid": "AAAA",
-               "image": "a.bin", "result": "OK", "elapsed_s": "1.0", "reason": "x"}
+        row = {"seq": 1, "port": "COM10", "started": "t1", "chip_id": "f103c8t6",
+               "uid": "AAAA", "image": "a.bin", "result": "OK", "elapsed_s": "1.0",
+               "reason": "x"}
         app._unit_row(row, start=False)
         app._row_map = {}          # 模拟第二次开工时的映射重置（计数/表保留）
         app._unit_row(dict(row, started="t2", uid="BBBB"), start=False)
+        # 多端口：两个端口各自从 seq=1 开始，端口不同 → 必须各占一行
+        app._unit_row(dict(row, port="COM11", uid="CCCC"), start=False)
         rows = app.unit_tv.get_children()
-        ok = (len(rows) == 2
-              and app.unit_tv.item(rows[0], "values")[3] == "AAAA"
-              and app.unit_tv.item(rows[1], "values")[3] == "BBBB")
-        check("GUI 结果表：两次会话的行互不覆盖", ok, str(rows))
+        vals = [app.unit_tv.item(r, "values") for r in rows]
+        check("GUI 结果表：两次会话行不覆盖 + 同名 seq 的不同端口各占一行",
+              len(rows) == 3 and vals[0][4] == "AAAA" and vals[1][4] == "BBBB"
+              and vals[2][4] == "CCCC" and vals[0][1] == "COM10"
+              and vals[2][1] == "COM11", str(vals))
         # 开工校验失败（未选串口）不得动既有计数
         app.f_counts = {"ok": 3, "skip": 1, "fail": 0}
         app._render_counters()
-        app.port_var.set("")
+        app.port_select(all_=False)
         app.do_batch_start()
         check("GUI 开工不清空既有计数（清空有专用按钮）",
               app.f_counts == {"ok": 3, "skip": 1, "fail": 0}
-              and len(app.unit_tv.get_children()) == 2, str(app.f_counts))
+              and len(app.unit_tv.get_children()) == 3, str(app.f_counts))
     finally:
         app._closing = True
         root.destroy()
@@ -1091,6 +1331,7 @@ def main():
     t_image_check()
     t_upgrade_bounds()
     t_factory_engine()
+    t_factory_multiport()
     t_drill_params()
     t_packaged_paths()
     t_gui_modes()

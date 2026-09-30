@@ -761,6 +761,9 @@ def build_parser():
                     help="factory：结果记录 CSV（追加写入，Excel 友好；缺省写在工具目录下的 "
                          "factory/records/records.csv）")
     ap.add_argument("--jsonl", help="factory：结果记录 JSONL（追加写入，机器可读）")
+    ap.add_argument("--ports", metavar="COMx,COMy",
+                    help="factory：多端口并行——一台机器插多个串口时每端口一个独立会话"
+                         "（同时烧多台），逗号分隔；不填则只用 --port 的单端口")
     ap.add_argument("--count", type=int, default=0, help="factory：烧录台数上限（0=不限）")
     ap.add_argument("--trigger", choices=["poll", "newport"], default="poll",
                     help="factory：换板触发——poll=同端口轮询（默认，适配器共用一根线）；"
@@ -886,8 +889,13 @@ def cmd_factory(a) -> int:
                                        "records.csv")
     kinds = {"poll": "同端口轮询（换板靠 UID 变化识别）",
              "newport": "检测到新串口即开工"}
+    ports = [p.strip() for p in (a.ports or a.port).split(",") if p.strip()]
+    if not ports:
+        sys.exit("[X] 未指定端口：用 --port 或 --ports")
     print("== 工厂批量刷写 ==")
-    print(f"  端口 {a.port}（{a.conn} @ {a.baud}）；触发：{kinds[a.trigger]}；"
+    print(f"  端口 {', '.join(ports)}"
+          + (f"（{len(ports)} 端口并行）" if len(ports) > 1 else "")
+          + f"（{a.conn} @ {a.baud}）；触发：{kinds[a.trigger]}；"
           f"芯片：{opts.chip_id}")
     print(f"  预设镜像：{image_map or '（未配置——检查到未配置预设的芯片会停下）'}")
     print(f"  记录：{records}" + (f" + {a.jsonl}" if a.jsonl else "")
@@ -901,11 +909,11 @@ def cmd_factory(a) -> int:
             print("\n已取消")
             return 130
     writer = bl_factory.RecordWriter(records, a.jsonl) if (records or a.jsonl) else None
-    sess = bl_factory.BatchSession(
-        profiles, opts, records=writer, log=print,
-        on_state=lambda code, text: print(f"[状态] {text}"))
+    sess = bl_factory.MultiSession(
+        profiles, opts, ports, records=writer, log=print,
+        on_state=lambda port, code, text: print(f"[状态] {port}：{text}"))
     try:
-        summary = sess.run(a.port)
+        summary = sess.run()
     except bl_chip.ChipError as e:
         sys.exit(f"[X] {e}")
     except OSError as e:
@@ -916,6 +924,11 @@ def cmd_factory(a) -> int:
           f"（共 {summary.total} 台，用时 {summary.elapsed_s:.1f}s）==")
     if records and summary.total:
         print(f"   记录已写入 {records}")
+    if not summary.total and getattr(sess, "failed_ports", None):
+        # 一个口都没打开：报错退出（不能当成「跑完 0 台」的成功）
+        print(f"[X] 端口打不开："
+              + "；".join(f"{p}（{r}）" for p, r in sess.failed_ports.items()))
+        return 1
     return 0 if summary.fail == 0 else 1
 
 
