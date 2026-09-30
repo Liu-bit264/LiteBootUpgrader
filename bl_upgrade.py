@@ -300,7 +300,8 @@ def parse_info_fields(d: bytes) -> dict:
 
     基础字段至少 31 B（status + ver(3) + uid(12) + flsz(2) + valid(1) + size/crc/seq(12)）；
     更短的响应（通常是 APP 迷你响应器所答）只置 short=True 并带回首字节状态。
-    诊断扩展区按实际 LEN 解析（最小实现只回 31 B，protocol.md §5.2）。"""
+    诊断扩展区按实际 LEN 解析（最小实现只回 31 B，protocol.md §5.2）；尾 2 B 的芯片身份
+    （0.5.0，ADR-021）解析为 dev_id——BL ≥ 0.5.0 才有，取编译期 BL_CHIP_DEVID。"""
     info = {"raw_len": len(d)}
     if not d:
         info["short"] = True
@@ -326,6 +327,8 @@ def parse_info_fields(d: bytes) -> dict:
         (info["timeout_pending"],) = struct.unpack_from("<I", d, 47)
     if len(d) >= 67:
         info["timeout_detail"] = struct.unpack_from("<IIII", d, 51)
+    if len(d) >= 69:
+        info["dev_id"] = d[67] | (d[68] << 8)   # 芯片身份（ADR-021），短响应即无
     return info
 
 
@@ -348,6 +351,9 @@ def parse_info(d: bytes) -> str:
     if len(d) >= 67:
         gap, tpend, tstate, tgot = f["timeout_detail"]
         extra += (f" | 超时现场: 饥饿{gap}ms 缓冲{tpend}B 状态{tstate} 已收{tgot}")
+    if len(d) >= 69:
+        # 芯片身份（ADR-021）：型号级标识，F4 的 0x413 覆盖多容量，需与 flash 联用
+        extra += f" chip={f['dev_id']:#06x}"
     return (f"BL v{ma}.{mi}.{pa} flash={f['flash_kib']}KB "
             f"app_valid={1 if f['app_valid'] else 0} "
             f"app_size={f['app_size']} app_crc={f['app_crc32']:#010x} seq={f['meta_seq']} "
@@ -355,21 +361,30 @@ def parse_info(d: bytes) -> str:
 
 
 def parse_meta(d: bytes) -> dict:
-    """GET_META 响应 21B：status + seq(4) + flags(4) + ver(3) + size(4) + crc(4) + copy(1)"""
+    """GET_META 响应 21B（0.5.0 起 23B）：status + seq(4) + flags(4) + ver(3) + size(4) +
+    crc(4) + copy(1) [+ dev_id(2)]。尾部芯片身份按实际 LEN 解析（protocol.md §5.7，
+    0xFFFF = 参数区未记录）。"""
     if len(d) < 21:
         # 畸形短响应防御（review 2026-09-27 P2），与 parse_info 的短响应保护同类
         raise RuntimeError(f"GET_META 响应 DATA 过短：{len(d)}B < 21B（对端异常）")
     seq, flags = struct.unpack_from("<II", d, 1)
     ver = (d[9], d[10], d[11])
     size, crc = struct.unpack_from("<II", d, 12)
-    return {"seq": seq, "flags": flags, "ver": ver,
-            "size": size, "crc": crc, "active_copy": d[20]}
+    out = {"seq": seq, "flags": flags, "ver": ver,
+           "size": size, "crc": crc, "active_copy": d[20]}
+    if len(d) >= 23:
+        out["dev_id"] = d[21] | (d[22] << 8)
+    return out
 
 
 def meta_str(m: dict) -> str:
+    dev = m.get("dev_id")
+    extra = ""
+    if dev is not None:
+        extra = (" dev=未记录" if dev == 0xFFFF else f" dev={dev:#06x}")
     return (f"seq={m['seq']} flags={m['flags']:#010x} "
             f"app_ver={m['ver'][0]}.{m['ver'][1]}.{m['ver'][2]} "
-            f"size={m['size']} crc={m['crc']:#010x} copy={m['active_copy']}")
+            f"size={m['size']} crc={m['crc']:#010x} copy={m['active_copy']}{extra}")
 
 
 OTA_CHAN = {0: "有线 USART1", 1: "蓝牙 UART2"}
@@ -428,10 +443,15 @@ def timeout_detail(bl: BootLoader):
 def selftest(bl: BootLoader, app_size: int | None = None) -> int:
     """15 步升级流程硬件在环自检。app_size 为芯片档案的 APP 分区大小
     （None 时用模块常量 APP_SIZE=F103 46 KiB）——F411 等大分区芯片须传档案值，
-    否则越界防护步会拿 F103 的偏移当越界点而假 FAIL。"""
+    否则越界防护步会拿 F103 的偏移当越界点而假 FAIL。
+
+    起始先 `ensure_bl`：对端在跑 APP 时 BL 的启动等待窗口已过，只有 PING 会被 APP 的
+    迷你响应器应答，随后的 ERASE_APP 会拿到 RANGE_ERROR 而让自检第一步就假 FAIL
+    （2026-09-30 实测踩到）——因此这里沿用升级路径的做法，先请对端回到 BL。"""
     limit = APP_SIZE if app_size is None else app_size
     print(f"== 升级流程检验 selftest（{bl.s.port} @ {bl.s.baudrate}，"
           f"APP 区 {limit // 1024} KiB）==")
+    ensure_bl(bl, log=print)
     results = []
 
     def step(name, ok, evidence):

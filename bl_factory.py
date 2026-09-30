@@ -42,7 +42,7 @@ STAGE_FLASH = "flash"
 STAGE_POST = "post"
 
 CSV_FIELDS = ["seq", "started", "finished", "elapsed_s", "port", "chip_id", "chip_name",
-              "uid", "image", "image_size", "image_crc32", "image_sha256",
+              "dev_id", "uid", "image", "image_size", "image_crc32", "image_sha256",
               "result", "stage", "reason", "bl_version"]
 
 
@@ -387,6 +387,9 @@ class BatchSession:
             if info and not info.get("short"):
                 rec["uid"] = info["uid"].hex().upper()
                 rec["bl_version"] = ".".join(str(x) for x in info["bl_version"])
+                # 芯片身份（ADR-021，BL ≥ 0.5.0 才有）：记录设备自报值，便于追溯
+                rec["dev_id"] = (f"{info['dev_id']:#06x}"
+                                 if info.get("dev_id") else "")
                 self._last_uid = rec["uid"]
             self._log(f"芯片 {prof.id}（{prof.name}）—— {why}")
             if rec["uid"]:
