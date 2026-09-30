@@ -13,10 +13,20 @@
 - 文档明确重试/超时的适用范围与章节号：自动重发只覆盖 `upgrade` 全流程，手工单命令不重试
   （各自超时上限 1–8 s）；协议章节引用由 §7 更正为 §6（SEQ 语义与超时），补 F411 已知限制
   行（selftest 边界步假 FAIL 与断电钻具不可用）
+- 文档跟进（签名验签 1.4.0）：README(.en) 兼容性表「配套固件」行补「签名升级（`--key`）
+  另需固件 BL 0.4.0 以上 + 该支持包 `BL_SIGN_EN=1`」；「签名验签升级」章节补验证状态
+  ——主机侧单测通过（keygen 产物格式、签名→公钥回验、篡改失效、0x11 帧结构 LEN=72），
+  板级 HIL 未跑（固件仓 `docs/dev/test_plan.md` §5.1 待办）
+
+### Security
+
+- **密钥材料加入 .gitignore**：新增 `*.pem` / `*.key` / `bl_sign_pubkey_local.h`（含任意
+  层级）。`keygen --out-key` 默认把私钥写成仓库根下的 `./sign_test_key.pem`，此前不在忽略
+  列表——`git add -A` 会把私钥纳入提交，与 ADR-020「密钥任何形态不入库」不符
 
 ### Notes
 
-- 本次代码无需改动：升级协议 VER 0x01 未变（帧格式/命令/状态码均不变）
+- 协议与固件行为无改动：升级协议 VER 0x01 未变（帧格式/命令/状态码均不变）
 - 待办（跨仓 follow-up）：`--chip` 参数化——`bl_upgrade.py` 的 `APP_SIZE=0xB800`
   与断电钻具的 pyocd 目标名均硬编码 F103（F411 上 selftest 的「越界防护」步假 FAIL、
   钻具不可用）
@@ -27,10 +37,10 @@
 
 ### Added
 
-- **`keygen` 子命令（密钥对生成器模块，用户要求）**：生成 P-256 测试密钥对——私钥
+- **`keygen` 子命令（密钥对生成器模块）**：生成 P-256 测试密钥对——私钥
   PEM（本地保管）+ 公钥本地头 `bl_sign_pubkey_local.h`（写入固件仓芯片端口目录，
   与固件 `core/bl_sign.c` 消费约定一致；注释刻意全 ASCII——armcc 以本地编码读源
-  文件，UTF-8 中文注释有吞换行风险）。**密钥任何形态不入库**（用户要求，ADR-020）。
+  文件，UTF-8 中文注释有吞换行风险）。**密钥任何形态不入库**（ADR-020）。
 - **`upgrade --key <pem>` 签名校验**：写块完成后改发 `0x11 VERIFY_SIGNED`
   （DATA = size+crc32+signature 64B r‖s 大端），auth 置位方可跳转；`SIGN_ERROR(0x06)`
   时给出排查提示（固件非 BL_SIGN_EN=1 / 公钥不配对）。cryptography 懒加载——

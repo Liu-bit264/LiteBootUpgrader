@@ -91,6 +91,9 @@ uv run --python 3.12 --with pyserial --with cryptography bl_upgrade.py \
 VERIFY 的镜像在启用签名的固件上 auth=0 同样不可跳转。防物理/调试口攻击与回滚不在
 范围（ADR-020 威胁模型）。
 
+> 验证状态：主机侧单测通过（keygen 产物格式、签名→公钥回验、篡改失效、0x11 帧结构
+> LEN=72）；**板级 HIL 未跑**——固件仓待办见其 `docs/dev/test_plan.md` §5.1。
+
 ### GUI 与 CLI 能力矩阵
 
 | 界面 | 覆盖能力 |
@@ -125,7 +128,7 @@ uv run --python 3.12 --with pyserial --with pyinstaller \
 |---|---|
 | 支持范围 | 按 LiteBootLoader 升级协议（VER 0x01）工作，**与芯片型号解耦**：任何实现该协议的 LiteBootLoader BL 均可配合；当前已验证组合 = BL 0.3.0 + STM32F103C8T6（全流程）、STM32F411CEU6 最小包（初始查询/升级/跳转/setmeta 回环）；多芯片参数化随固件仓 CSP 扩展 |
 | 协议版本 | VER 0x01（LiteBootLoader 仓库 `docs/protocol.md`，0x10 OTA_QUERY 随 BL 0.2.0 起可用） |
-| 配套固件 | LiteBootLoader BL 0.3.0+（0.1.0/0.2.0 亦可，仅差 `ota` 查询与蓝牙通道）；**蓝牙连接需固件启用蓝牙通道**（`BL_TRANSPORT_BT_EN=1`，0.3.0 起默认示例配置未启用，见固件仓 porting_guide §3.1） |
+| 配套固件 | LiteBootLoader BL 0.3.0+（0.1.0/0.2.0 亦可，仅差 `ota` 查询与蓝牙通道）；**蓝牙连接需固件启用蓝牙通道**（`BL_TRANSPORT_BT_EN=1`，0.3.0 起默认示例配置未启用，见固件仓 porting_guide §3.1）；**签名升级（`--key`）另需 BL 0.4.0 以上 + 该支持包 `BL_SIGN_EN=1`**（见上「签名验签升级」，现仅 F411 支持） |
 | 镜像上限 | 当前按 STM32F103C8T6 分区校验 46 KiB（0xB800），4 字节对齐自动补 0xFF——F411CEU6（448K 分区）升级/跳转已验证但镜像仍受该 46K 上限约束；`--chip` 参数化见固件仓 CSP 路线 |
 | F411 已知限制 | F411CEU6 上 `selftest` 的「越界防护」步会假 FAIL（夹具硬编码 F103 `APP_SIZE=0xB800`，该偏移在 448K APP 区内属合法写入），断电钻具 `bl_powerloss_drill.py` 亦因 pyocd 目标名硬编码 F103 而不可用——两者随 `--chip` 参数化一并解决 |
 | 镜像校验 | CRC-32/ISO-HDLC（zlib 兼容）；帧校验 CRC16/MODBUS |

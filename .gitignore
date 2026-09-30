@@ -12,5 +12,12 @@ dist/
 .mimosa/
 .zcode/
 
+# ---- 密钥材料（ADR-020：任何形态不入库，见 README「签名验签升级」） ----
+# keygen 默认把私钥写成 ./sign_test_key.pem（生成在仓库根，必须忽略）
+*.pem
+*.key
+bl_sign_pubkey_local.h
+**/bl_sign_pubkey_local.h
+
 # ---- 评审过程记录（本地保留，不入库） ----
 docs/review/
