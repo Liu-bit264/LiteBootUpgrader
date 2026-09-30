@@ -21,6 +21,11 @@
 双击 `dist\bl_upgrade_gui.exe`（构建方式见下文），或在命令行使用
 `dist\bl_upgrade.exe`。单文件、免安装；换机分发只需拷贝 exe。
 
+内置芯片档案包（`bl_chip_profiles.json`）已打进 exe，**目标机不需要固件仓**——工厂模式的
+自动探查照样可用；把新版档案包放到 exe 旁即覆盖内置包。工厂本地配置（`factory/local.json`）、
+结果记录与预设镜像都按 **exe 所在目录**解析（不是启动时的当前目录），从任意位置启动都写在
+exe 旁边。
+
 ### 方式 B：源码运行（依赖隔离建议）
 
 > **依赖隔离建议**：Python 依赖建议装在隔离环境（`uv run --with` 或 venv），
@@ -194,7 +199,7 @@ uv run --python 3.12 --with pyserial bl_upgrade.py factory \
     --image f411ceu6=D:/release/f411ceu6_app.bin --yes
 ```
 
-> 验证状态：主机侧单测 117 项全绿（含模式矩阵、探查消歧、镜像体检、批量状态机、
+> 验证状态：主机侧单测 122 项全绿（含模式矩阵、探查消歧、镜像体检、批量状态机、
 > 落盘/续烧/停止）；**F103C8T6 板级实测通过**——自动探查命中、单台批量烧录（约 3.5 s/台，
 > CRC 校验 + 跳转 APP）、跳过已是最新（真实 CRC32 一致）、断点续烧（真实 UID）、
 > 升级中立即停止（中断判 FAIL，设备 `app_valid=0` 拒绝运行不完整 APP）。
@@ -221,12 +226,18 @@ uv run --python 3.12 --with pyserial bl_upgrade.py factory \
 
 ```bash
 uv run --python 3.12 --with pyserial --with pyinstaller \
-  pyinstaller --noconfirm --onefile --windowed --name bl_upgrade_gui bl_upgrade_gui.py
+  pyinstaller --noconfirm --onefile --windowed --name bl_upgrade_gui \
+  --add-data "bl_chip_profiles.json;." bl_upgrade_gui.py
 uv run --python 3.12 --with pyserial --with pyinstaller \
-  pyinstaller --noconfirm --clean --onefile --console --name bl_upgrade bl_upgrade.py
+  pyinstaller --noconfirm --clean --onefile --console --name bl_upgrade \
+  --add-data "bl_chip_profiles.json;." bl_upgrade.py
 ```
 
 产物在 `dist\`（`build/`、`*.spec` 为中间产物，均不入库）。
+
+> `--add-data "bl_chip_profiles.json;."` 不能省：档案包是**运行期读取的数据文件**（不是
+> import），不打包进去的话，换机/无固件仓时工具会报「未发现芯片档案」。构建脚本已含此项，
+> 手工构建时照抄即可。
 
 ## 配套与兼容性
 

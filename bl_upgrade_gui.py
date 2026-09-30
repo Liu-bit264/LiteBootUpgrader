@@ -56,7 +56,8 @@ APP_TITLE = f"LiteBootLoader 升级工具 v{blp.VERSION}"
 DEFAULT_BAUD = 115200
 FOLLOW = {"jump": 2.5, "reset": 6.0, "ping": 0.3}
 STATE_FILE = os.path.join(os.path.expanduser("~"), ".litebootupgrader_gui.json")
-RECORDS_DEFAULT = os.path.join("factory", "records", "records.csv")
+# 记录缺省写在**工具目录**下（源码运行=仓库根；打包 exe=exe 旁），而非进程 CWD
+RECORDS_DEFAULT = os.path.join(bl_chip.app_dir(), "factory", "records", "records.csv")
 
 # 邻居主仓的示例镜像（存在则预填，纯便利不考虑强依赖）
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))

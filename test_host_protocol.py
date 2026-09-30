@@ -1023,6 +1023,51 @@ def t_drill_params():
                            cfg={})["f103c8t6"].pyocd_target == "stm32f103c8")
 
 
+def t_packaged_paths():
+    """打包 exe 的路径解析（1.5.0）：onefile 下 __file__ 在临时解包目录，
+    app_dir 必须跟 exe 走、档案包候选要同时含 exe 旁与解包目录。"""
+    check("档案包候选含 app_dir 且实际存在",
+          bc.BUNDLE_PATH in bc.bundle_paths() and os.path.isfile(bc.BUNDLE_PATH),
+          str(bc.bundle_paths()))
+    saved = (getattr(sys, "frozen", None), sys.executable,
+             getattr(sys, "_MEIPASS", None))
+    exe_dir = os.path.join(tempfile.gettempdir(), "lbu-exe-dir")
+    meipass = os.path.join(tempfile.gettempdir(), "lbu-meipass")
+    try:
+        sys.frozen = True
+        sys.executable = os.path.join(exe_dir, "bl_upgrade.exe")
+        sys._MEIPASS = meipass
+        got_app = bc.app_dir()
+        got_res = bc.resource_dir()
+        paths = bc.bundle_paths()
+    finally:
+        if saved[0] is None:
+            del sys.frozen
+        else:
+            sys.frozen = saved[0]
+        sys.executable = saved[1]
+        if saved[2] is None:
+            del sys._MEIPASS
+        else:
+            sys._MEIPASS = saved[2]
+    check("打包路径：app_dir 跟 exe、资源目录跟 _MEIPASS",
+          got_app == exe_dir and got_res == meipass, f"{got_app} / {got_res}")
+    check("打包路径：档案包候选 = exe 旁（可覆盖）+ 解包目录（内置）",
+          paths == [os.path.join(exe_dir, "bl_chip_profiles.json"),
+                    os.path.join(meipass, "bl_chip_profiles.json")], str(paths))
+    check("源码运行：app_dir 即本文件目录且档案包就在其中",
+          bc.app_dir() == os.path.dirname(os.path.abspath(bc.__file__))
+          and os.path.isfile(bc.BUNDLE_PATH))
+    check("工厂记录缺省落在工具目录下（不吃进程 CWD）",
+          bc.app_dir() in gui_records_default(),
+          gui_records_default())
+
+
+def gui_records_default():
+    import bl_upgrade_gui as gui
+    return gui.RECORDS_DEFAULT
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1047,6 +1092,7 @@ def main():
     t_upgrade_bounds()
     t_factory_engine()
     t_drill_params()
+    t_packaged_paths()
     t_gui_modes()
     n = sum(RESULTS)
     print(f"== 主机侧单测：{n}/{len(RESULTS)} 通过 ==")

@@ -757,8 +757,8 @@ def build_parser():
     ap.add_argument("--force-image", action="store_true",
                     help="跳过镜像体检（向量表/大小判定为应急口；CRC/SHA 仍照算）")
     # ---- 工厂批量（factory 子命令） ----
-    ap.add_argument("--records", default="factory/records/records.csv",
-                    help="factory：结果记录 CSV（追加写入，Excel 友好；默认 "
+    ap.add_argument("--records", default=None,
+                    help="factory：结果记录 CSV（追加写入，Excel 友好；缺省写在工具目录下的 "
                          "factory/records/records.csv）")
     ap.add_argument("--jsonl", help="factory：结果记录 JSONL（追加写入，机器可读）")
     ap.add_argument("--count", type=int, default=0, help="factory：烧录台数上限（0=不限）")
@@ -882,7 +882,8 @@ def cmd_factory(a) -> int:
         skip_uptodate=a.skip_uptodate, auto_jump=a.auto_jump, app_version=app_ver,
         key_path=a.key, force_image=a.force_image, allow_probe=not a.no_probe,
         count=a.count, resume=a.resume)
-    records = a.records
+    records = a.records or os.path.join(bl_chip.app_dir(), "factory", "records",
+                                       "records.csv")
     kinds = {"poll": "同端口轮询（换板靠 UID 变化识别）",
              "newport": "检测到新串口即开工"}
     print("== 工厂批量刷写 ==")

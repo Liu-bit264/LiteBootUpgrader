@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import struct
+import sys
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,10 +37,35 @@ import bl_upgrade as blp
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 BUNDLE_NAME = "bl_chip_profiles.json"
-BUNDLE_PATH = os.path.join(_THIS_DIR, BUNDLE_NAME)
-LOCAL_PATH = os.path.join(_THIS_DIR, "factory", "local.json")
+
+
+def app_dir() -> str:
+    """工具所在目录：源码运行 = 本文件目录；PyInstaller 打包 = **exe 所在目录**
+    （onefile 下 __file__ 指向临时解包目录，不能拿它放本地配置/记录）。"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return _THIS_DIR
+
+
+def resource_dir() -> str:
+    """只读捆绑资源目录：onefile 下是 PyInstaller 的 _MEIPASS 解包目录，否则同 app_dir()。"""
+    return getattr(sys, "_MEIPASS", _THIS_DIR)
+
+
+def bundle_paths() -> list:
+    """内置档案包候选路径：先 app_dir（便于在 exe 旁放新版覆盖），再捆绑资源目录。"""
+    out = []
+    for d in (app_dir(), resource_dir()):
+        p = os.path.join(d, BUNDLE_NAME)
+        if p not in out:
+            out.append(p)
+    return out
+
+
+BUNDLE_PATH = os.path.join(app_dir(), BUNDLE_NAME)
+LOCAL_PATH = os.path.join(app_dir(), "factory", "local.json")
 USER_PATH = os.path.join(os.path.expanduser("~"), ".litebootupgrader_factory.json")
-FIRMWARE_ROOT_SIBLING = os.path.join(os.path.dirname(_THIS_DIR), "LiteBootLoader")
+FIRMWARE_ROOT_SIBLING = os.path.join(os.path.dirname(app_dir()), "LiteBootLoader")
 
 PROBE_CRC = 0xDEADBEEF      # 探查用垃圾 CRC（见模块说明的 2^-32 代价）
 ST_OK = 0x00
@@ -331,9 +357,10 @@ def load_profiles(explicit: str | None = None, firmware_root: str | None = None,
     if os.path.isdir(os.path.join(root, "chips")):
         _merge(load_manifest_dir(root), os.path.join(root, "chips"))
 
-    if os.path.isfile(BUNDLE_PATH):
-        _merge(profiles_from_chip_dicts(_chip_items(_read_json(BUNDLE_PATH)), BUNDLE_NAME),
-               BUNDLE_NAME)
+    for bp in bundle_paths():
+        if os.path.isfile(bp):
+            _merge(profiles_from_chip_dicts(_chip_items(_read_json(bp)), bp), bp)
+            break
 
     for p in out.values():
         if p.example_image_rel:
@@ -355,10 +382,12 @@ def bundle_text(profiles: dict) -> str:
     return json.dumps(bundle_dict(profiles), ensure_ascii=False, indent=2) + "\n"
 
 
-def sync_bundle(firmware_root: str | None = None, path: str = BUNDLE_PATH,
+def sync_bundle(firmware_root: str | None = None, path: str | None = None,
                 log=print) -> tuple:
-    """从固件仓清单重建内置档案包；返回 (是否变化, 芯片数)。"""
+    """从固件仓清单重建内置档案包；返回 (是否变化, 芯片数)。
+    缺省写到 app_dir()（源码运行=仓库根；打包 exe=exe 旁，便于随 exe 分发覆盖）。"""
     root = firmware_root or FIRMWARE_ROOT_SIBLING
+    path = path or os.path.join(app_dir(), BUNDLE_NAME)
     if not os.path.isdir(os.path.join(root, "chips")):
         raise ChipError(f"固件仓 chips/ 目录不存在：{os.path.join(root, 'chips')}"
                         "（用 --firmware-root 指定）")

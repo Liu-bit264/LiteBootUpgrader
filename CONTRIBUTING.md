@@ -25,11 +25,12 @@ LiteBootUpgrader/
 ├── bl_chip_profiles.json  内置芯片档案包（生成物，`chips sync` 从固件仓重建，勿手改）
 ├── bl_upgrade_gui.py      tkinter 图形界面（基础 / 高级 / 工厂三种形态，后两者可同时开启）
 ├── bl_powerloss_drill.py  验收 #9 参数区写入中断恢复钻具（`--chip` 取 pyocd 目标/pack）
-├── test_host_protocol.py  主机侧无硬件单测（117 项，纯脚本自计数）
+├── test_host_protocol.py  主机侧无硬件单测（122 项，纯脚本自计数）
 ├── factory/
 │   └── local.example.json 工厂本地配置示例（复制为 local.json；实际配置与记录不入库）
 ├── bl_upgrade_gui.bat     GUI 双击启动器
-├── build_exe.bat          Windows 可执行程序构建脚本（PyInstaller → dist/）
+├── build_exe.bat          Windows 可执行程序构建脚本（PyInstaller → dist/；
+│                          含 --add-data 把 bl_chip_profiles.json 打进包内，勿删）
 ├── docs/                  GUI 截图（gui.png / gui_adv.png / gui_factory.png / gui_factory_adv.png）
 ├── LICENSE                MIT 许可证
 └── dist/                  构建产物（不入库，见 .gitignore）
@@ -43,7 +44,7 @@ LiteBootUpgrader/
 ## 测试与验收
 
 ```bash
-# 主机侧单测（无需硬件，117 项：CRC KAT/帧模板/解析器（含结构化 GET_INFO）/响应解析含 OTA/
+# 主机侧单测（无需硬件，122 项：CRC KAT/帧模板/解析器（含结构化 GET_INFO）/响应解析含 OTA/
 # SEQ 与 CMD 错位丢弃/芯片档案与几何自检/探查四种结局/镜像体检/升级上限与停止不落字节/
 # 批量引擎全流程与落盘续烧/钻具参数化/CLI 参数面/GUI 模式矩阵与版式/状态持久化）
 uv run --python 3.12 --with pyserial python test_host_protocol.py

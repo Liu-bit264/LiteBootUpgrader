@@ -27,6 +27,12 @@ Double-click `dist\bl_upgrade_gui.exe` (build instructions below), or use
 `dist\bl_upgrade.exe` on the command line. Single-file, no installation; distribution
 is just copying the exe.
 
+The bundled chip profile pack (`bl_chip_profiles.json`) is packaged inside the exe, so the
+**target machine needs no firmware repo** — factory mode's automatic detection still works;
+drop a newer pack next to the exe to override the bundled one. The factory config
+(`factory/local.json`), result records and preset images all resolve against the **exe's own
+directory** (not the launch CWD), so a double-clicked exe writes next to itself.
+
 ### Option B: Run from source (dependency isolation recommended)
 
 > **Dependency isolation (recommended)**: install Python dependencies in an isolated
@@ -237,7 +243,7 @@ uv run --python 3.12 --with pyserial bl_upgrade.py factory \
     --image f411ceu6=D:/release/f411ceu6_app.bin --yes
 ```
 
-> Validation status: 117 host-side unit checks pass (mode matrix, probe disambiguation,
+> Validation status: 122 host-side unit checks pass (mode matrix, probe disambiguation,
 > image health check, batch state machine, records/resume/stop); **verified on an actual
 > STM32F103C8T6** — detection hits, single-unit batch flash (~3.5 s per unit, CRC verified
 > + jump to APP), skip-if-current (real matching CRC32), resume (real UID) and immediate
@@ -269,12 +275,19 @@ Double-click `build_exe.bat`, or run:
 
 ```bash
 uv run --python 3.12 --with pyserial --with pyinstaller \
-  pyinstaller --noconfirm --onefile --windowed --name bl_upgrade_gui bl_upgrade_gui.py
+  pyinstaller --noconfirm --onefile --windowed --name bl_upgrade_gui \
+  --add-data "bl_chip_profiles.json;." bl_upgrade_gui.py
 uv run --python 3.12 --with pyserial --with pyinstaller \
-  pyinstaller --noconfirm --clean --onefile --console --name bl_upgrade bl_upgrade.py
+  pyinstaller --noconfirm --clean --onefile --console --name bl_upgrade \
+  --add-data "bl_chip_profiles.json;." bl_upgrade.py
 ```
 
 Artifacts land in `dist\` (`build/` and `*.spec` are intermediates, not committed).
+
+> `--add-data "bl_chip_profiles.json;."` is not optional: the profile pack is a **file read at
+> runtime** (not an import), so without it a copied exe with no firmware repo next to it reports
+> "no chip profiles found". The build script already includes it — copy the line when building
+> by hand.
 
 ## Compatibility
 
