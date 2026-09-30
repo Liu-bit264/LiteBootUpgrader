@@ -1090,10 +1090,14 @@ def t_gui_modes():
             fit = root.winfo_reqheight() <= app.win_h
             scrolled = bool(app.page_sb.winfo_manager())
             panels_need = app.page_inner.winfo_reqheight() > app._page_h
-            ok = fit and scrolled and panels_need and app._page_h >= gui.PAGE_MIN_H
+            # 滚动的是左侧面板区；右侧侧边栏（状态 + 设备结果）不随滚动消失
+            side_fixed = (app.sidebar.winfo_manager() == "pack"
+                          and app.sidebar.master is app.body)
+            ok = (fit and scrolled and panels_need and side_fixed
+                  and app._page_h >= gui.PAGE_MIN_H)
             detail = (f"窗口 {app.win_w}x{app.win_h}；内容高 {root.winfo_reqheight()}；"
                       f"面板 {app.page_inner.winfo_reqheight()}→{app._page_h}；"
-                      f"滚动条 {'有' if scrolled else '无'}")
+                      f"滚动条 {'有' if scrolled else '无'}；侧边栏固定={side_fixed}")
         finally:
             app._closing = True
             root.destroy()
@@ -1140,8 +1144,11 @@ def t_gui_modes():
               and pick == ["COM11", "COM12"] and app.port_var.get() == "COM11",
               f"全选={all_sel} 清空={none_sel} 手动={pick}")
 
-        # 状态栏在结果表右侧（原地：整行计数/大字状态；现改为右侧竖列）
-        right = app.unit_tv.master is app.progress.master.master
+        # 侧边栏：状态与设备结果都在右侧竖栏里，且**不在滚动区**（滚的是左侧面板）
+        side_ok = (app.sidebar.master is app.body
+                   and app.unit_tv.master.master is app.sidebar
+                   and app.progress.master.master is app.sidebar
+                   and app.page_inner.master is app.page_canvas)
         fresh_no_port = app.port_stat.winfo_manager() == ""
 
         # 开工：把选中的端口全部交给工作线程（含多端口并行提示）
@@ -1162,9 +1169,9 @@ def t_gui_modes():
                       and set(app.f_port_vars) == {"COM11", "COM12"})
         app._render_port_states(["COM11"])
         single_hidden = app.port_stat.winfo_manager() == ""
-        check("GUI 状态栏在结果表右侧（单口不占位、多口逐口状态）",
-              right and fresh_no_port and multi_rows and single_hidden,
-              f"right={right} 单口不占位={fresh_no_port and single_hidden}")
+        check("GUI 侧边栏：状态与设备结果固定在右侧（单口不占位、多口逐口状态）",
+              side_ok and fresh_no_port and multi_rows and single_hidden,
+              f"侧边栏={side_ok} 单口不占位={fresh_no_port and single_hidden}")
 
         # 队列消息形态（多端口）：逐口状态 + 汇总大字 + 带端口的进度与结果行
         app.cur_ports = ["COM11", "COM12"]

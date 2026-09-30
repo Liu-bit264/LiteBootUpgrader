@@ -71,8 +71,8 @@ RECORDS_DEFAULT = os.path.join(bl_chip.app_dir(), "factory", "records", "records
 WINDOW_PREF = {
     (False, False): (720, 560),
     (True, False): (720, 790),
-    (False, True): (1024, 830),
-    (True, True): (1064, 900),
+    (False, True): (1280, 830),
+    (True, True): (1280, 900),
 }
 WINDOW_MIN = {
     (False, False): (560, 460),
@@ -81,6 +81,7 @@ WINDOW_MIN = {
     (True, True): (900, 700),
 }
 PAGE_MIN_H = 150       # 面板区最小高度：再小就没法用，宁可让日志被压
+SIDE_W = 550           # 工厂模式右侧侧边栏宽度（状态 + 设备结果表）
 
 # 邻居主仓的示例镜像（存在则预填，纯便利不考虑强依赖）
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -177,15 +178,26 @@ class App:
                 .pack(side="left", padx=2)
         self._build_conn_picker(top)
 
-        # 面板区：内容先建在 page_inner 里，尺寸定好后再按屏幕给画布高度
-        page = ttk.Frame(root)
-        page.pack(fill="both", expand=False, padx=0, pady=0)
-        self.page_canvas = tk.Canvas(page, highlightthickness=0,
-                                     width=max(320, self.win_w - 24),
-                                     height=PAGE_MIN_H)
-        self.page_sb = ttk.Scrollbar(page, orient="vertical",
+        # 主体：左「面板区」（可滚动，装芯片/批量/高级）+ 右「侧边栏」（工厂模式：
+        # 状态与设备结果常驻可见，不进滚动区——运行中最该盯的两块）。
+        # 主体不抢富余高度（它按内容自然高度摆），富余给下沿的日志。
+        self.body = ttk.Frame(root)
+        self.body.pack(fill="x", expand=False)
+        if factory:
+            self.sidebar = ttk.Frame(self.body)
+            self.sidebar.pack(side="right", fill="y", padx=(2, 8), pady=4)
+        main = ttk.Frame(self.body)
+        main.pack(side="left", fill="both", expand=True)
+        self.page_canvas = tk.Canvas(
+            main, highlightthickness=0,
+            width=max(320, self.win_w - (SIDE_W + 48 if factory else 24)),
+            height=PAGE_MIN_H)
+        self.main_hsb = ttk.Scrollbar(main, orient="horizontal",
+                                      command=self.page_canvas.xview)
+        self.page_sb = ttk.Scrollbar(main, orient="vertical",
                                      command=self.page_canvas.yview)
-        self.page_canvas.configure(yscrollcommand=self.page_sb.set)
+        self.page_canvas.configure(yscrollcommand=self.page_sb.set,
+                                   xscrollcommand=self.main_hsb.set)
         self.page_canvas.pack(side="left", fill="both", expand=True)
         self.page_inner = ttk.Frame(self.page_canvas)
         self._page_win = self.page_canvas.create_window((0, 0), window=self.page_inner,
@@ -216,7 +228,7 @@ class App:
             .pack(side="left", padx=(16, 0))
 
         if not factory:
-            # 工厂模式的进度条在右侧状态栏里（_build_factory），其余模式在窗口下沿
+            # 工厂模式的进度条在右侧侧边栏里（_build_factory_status），其余模式在窗口下沿
             self.progress = ttk.Progressbar(root, maximum=100)
             self.progress.pack(fill="x", padx=8, pady=2)
         self.status = tk.StringVar(value="空闲")
@@ -226,7 +238,7 @@ class App:
         ttk.Label(root, textvariable=self.scroll_hint, anchor="w",
                   foreground="#888").pack(fill="x", padx=10)
 
-        logs = 4 if self.tall else (6 if factory else 14)   # 工厂面板占竖向空间
+        logs = 4 if self.tall else (8 if factory else 14)
         logf = ttk.LabelFrame(root, text="日志")
         logf.pack(fill="both", expand=True, padx=8, pady=(4, 8))
         self.log_text = tk.Text(logf, height=logs, state="disabled",
@@ -263,20 +275,26 @@ class App:
         self._sync_scroll()
 
     def _sync_scroll(self):
-        """面板内容超出面板区高度：显示滚动条并给出提示（无需滚动时不占地方）。"""
+        """面板内容超出面板区：显示滚动条并给出提示（无需滚动时不占地方）。"""
         if self._closing:
             return
         inner_h = self.page_inner.winfo_reqheight()
-        need = inner_h > self._page_h
-        if need and not self.page_sb.winfo_manager():
+        inner_w = self.page_inner.winfo_reqwidth()
+        need_v = inner_h > self._page_h
+        need_h = inner_w > self.page_canvas.winfo_reqwidth()
+        if need_v and not self.page_sb.winfo_manager():
             self.page_sb.pack(side="right", fill="y")
-        elif not need and self.page_sb.winfo_manager():
+        elif not need_v and self.page_sb.winfo_manager():
             self.page_sb.pack_forget()
-        self.scroll_hint.set("面板区超出窗口：鼠标滚轮滚动查看（日志与状态行固定在下沿）"
-                             if need else "")
+        if need_h and not self.main_hsb.winfo_manager():
+            self.main_hsb.pack(side="bottom", fill="x", before=self.page_canvas)
+        elif not need_h and self.main_hsb.winfo_manager():
+            self.main_hsb.pack_forget()
+        tail = "状态与设备结果固定在右侧" if self.factory else "日志与状态行固定在下沿"
+        self.scroll_hint.set(f"面板区超出窗口：鼠标滚轮滚动查看（{tail}）"
+                             if need_v or need_h else "")
         self.page_canvas.configure(
-            scrollregion=(0, 0, max(self.page_inner.winfo_reqwidth(),
-                                    self.page_canvas.winfo_reqwidth()), inner_h))
+            scrollregion=(0, 0, max(inner_w, self.page_canvas.winfo_reqwidth()), inner_h))
 
     def _on_root_configure(self, e):
         """窗口被拉大/缩小：把富余高度给面板区（而不是让日志无限长）。"""
@@ -291,9 +309,12 @@ class App:
 
     def _bind_wheel(self):
         def _wheel(e):
-            if not self.page_sb.winfo_manager():
+            if not (self.page_sb.winfo_manager() or self.main_hsb.winfo_manager()):
                 return
             if not self._in_page(self.root.winfo_containing(e.x_root, e.y_root)):
+                return
+            if e.state & 0x1 and self.main_hsb.winfo_manager():   # Shift+滚轮 = 横向
+                self.page_canvas.xview_scroll(-1 if e.delta > 0 else 1, "units")
                 return
             self.page_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
         self.root.bind_all("<MouseWheel>", _wheel, add="+")
@@ -404,8 +425,8 @@ class App:
         self.preset_tv = ttk.Treeview(lf, columns=("id", "name", "app", "image", "state"),
                                       show="headings",
                                       height=2 if self.tall else 3)
-        for c, w, t in (("id", 86, "芯片 id"), ("name", 96, "器件"),
-                        ("app", 104, "APP 区"), ("image", 290, "预设镜像"),
+        for c, w, t in (("id", 86, "芯片 id"), ("name", 88, "器件"),
+                        ("app", 96, "APP 区"), ("image", 246, "预设镜像"),
                         ("state", 92, "状态")):
             self.preset_tv.heading(c, text=t)
             self.preset_tv.column(c, width=w, anchor="w")
@@ -418,7 +439,7 @@ class App:
         ttk.Button(rb, text="用固件仓示例镜像", command=self.f_use_example)\
             .pack(side="left", padx=4)
         if not self.tall:
-            ttk.Label(rb, text="「状态」列 = 该芯片现在能不能开工（缺镜像/向量表不符即拒绝）",
+            ttk.Label(rb, text="「状态」列 = 能否开工（缺镜像/向量表不符即拒绝）",
                       foreground="#888").pack(side="left", padx=8)
 
         lb = ttk.LabelFrame(root, text="批量刷写")
@@ -430,8 +451,7 @@ class App:
         ttk.Combobox(r1, textvariable=self.f_trigger, width=14, state="readonly",
                      values=["同端口轮询", "新串口出现"]).pack(side="left")
         if not self.tall:      # 双开时省掉提示行（内容够高，提示见 README）
-            ttk.Label(r1, text="（同端口=拔插板子；新串口=每板一个转换器；"
-                               "多选串口=各端口并行、互不影响）",
+            ttk.Label(r1, text="（同端口=拔插板子；新串口=每板一个转换器；多选=并行）",
                       foreground="#888").pack(side="left", padx=6)
         r1b = ttk.Frame(lb)
         r1b.pack(fill="x", padx=4, pady=2)
@@ -446,22 +466,23 @@ class App:
         r2.pack(fill="x", padx=4, pady=2)
         ttk.Label(r2, text="记录 CSV").pack(side="left", padx=(4, 2))
         self.f_records = tk.StringVar(value=self.f_cfg.get("records") or RECORDS_DEFAULT)
-        ttk.Entry(r2, textvariable=self.f_records, width=40).pack(side="left")
+        ttk.Entry(r2, textvariable=self.f_records, width=32).pack(side="left")
         ttk.Button(r2, text="浏览…", command=self.f_pick_records).pack(side="left", padx=2)
         ttk.Label(r2, text="JSONL").pack(side="left", padx=(10, 2))
         self.f_jsonl = tk.StringVar(value=self.f_cfg.get("jsonl") or "")
-        ttk.Entry(r2, textvariable=self.f_jsonl, width=22).pack(side="left")
+        ttk.Entry(r2, textvariable=self.f_jsonl, width=18).pack(side="left")
         r3 = ttk.Frame(lb)
         r3.pack(fill="x", padx=4, pady=2)
         ttk.Label(r3, text="签名私钥（可选）").pack(side="left", padx=(4, 2))
         self.f_key = tk.StringVar()
-        ttk.Entry(r3, textvariable=self.f_key, width=34).pack(side="left")
+        ttk.Entry(r3, textvariable=self.f_key, width=22).pack(side="left")
         ttk.Button(r3, text="浏览…", command=self.f_pick_key).pack(side="left", padx=2)
         ttk.Label(r3, text="APP 版本").pack(side="left", padx=(10, 2))
         self.f_appver = tk.StringVar()
         ttk.Entry(r3, textvariable=self.f_appver, width=9).pack(side="left")
-        ttk.Label(r3, text="（如 1.2.3，留空跳过；写 SET_META 0x02）",
-                  foreground="#888").pack(side="left", padx=6)
+        if not self.tall:
+            ttk.Label(r3, text="（如 1.2.3；留空=跳过）",
+                      foreground="#888").pack(side="left", padx=6)
         r4 = ttk.Frame(lb)
         r4.pack(fill="x", padx=4, pady=(4, 6))
         self.btn_f_start = ttk.Button(r4, text="开工", command=self.do_batch_start)
@@ -476,30 +497,36 @@ class App:
             ttk.Label(r4, text="端口有应答即开工；已选多个端口则并行",
                       foreground="#888").pack(side="left", padx=8)
 
-        lu = ttk.LabelFrame(root, text="设备结果（本会话）")
-        lu.pack(fill="both", expand=True, padx=8, pady=(0, 4))
-        # 状态栏在结果表**右侧**（占满高度的一块），不再上下叠两行
-        side = ttk.LabelFrame(lu, text="状态")
-        side.pack(side="right", fill="y", padx=(2, 4), pady=4)
-        cols = ("seq", "port", "time", "chip", "uid", "image", "result", "elapsed",
-                "note")
+        self._build_sidebar()
+        self.f_scan_profiles()
+
+    def _build_sidebar(self):
+        """右侧侧边栏：状态在上、设备结果表在下——批量的两块「运行时要盯的东西」
+        常驻可见，不随左侧面板区滚动（左区装不下时才滚）。"""
+        st = ttk.LabelFrame(self.sidebar, text="状态")
+        st.pack(fill="x", padx=0, pady=(0, 4))
+        self._build_factory_status(st)
+        lu = ttk.LabelFrame(self.sidebar, text="设备结果（本会话）")
+        lu.pack(fill="both", expand=True)
+        cols = ("seq", "port", "time", "chip", "uid", "result", "elapsed", "note")
         self.unit_tv = ttk.Treeview(lu, columns=cols, show="headings",
-                                    height=3 if self.tall else 5)
-        for c, w, t in (("seq", 34, "#"), ("port", 60, "端口"), ("time", 62, "时间"),
-                        ("chip", 84, "芯片"), ("uid", 92, "UID"),
-                        ("image", 112, "镜像"), ("result", 46, "结果"),
-                        ("elapsed", 46, "耗时"), ("note", 168, "说明")):
+                                    height=6 if not self.tall else 4)
+        for c, w, t in (("seq", 30, "#"), ("port", 50, "端口"), ("time", 54, "时间"),
+                        ("chip", 74, "芯片"), ("uid", 84, "UID"),
+                        ("result", 42, "结果"), ("elapsed", 42, "耗时s"),
+                        ("note", 150, "说明")):
             self.unit_tv.heading(c, text=t)
             self.unit_tv.column(c, width=w, anchor="w")
-        self.unit_tv.pack(side="left", fill="both", expand=True, padx=(4, 2), pady=4)
-        self._build_factory_status(side)
-        self.f_scan_profiles()
+        sbt = ttk.Scrollbar(lu, orient="vertical", command=self.unit_tv.yview)
+        self.unit_tv.configure(yscrollcommand=sbt.set)
+        sbt.pack(side="right", fill="y")
+        self.unit_tv.pack(side="left", fill="both", expand=True, padx=4, pady=4)
 
     def _build_factory_status(self, side):
         """右侧状态栏：大字状态 + 进度条 + 计数 + 逐端口状态（多端口时）。"""
         self.f_state_var = tk.StringVar(value="空闲")
         ttk.Label(side, textvariable=self.f_state_var, font=("", 11, "bold"),
-                  wraplength=180, justify="left", anchor="w")\
+                  wraplength=500, justify="left", anchor="w")\
             .pack(fill="x", padx=6, pady=(6, 2))
         self.progress = ttk.Progressbar(side, maximum=100)
         self.progress.pack(fill="x", padx=6, pady=(0, 4))
@@ -512,7 +539,7 @@ class App:
         for i, v in enumerate((self.cnt_ok, self.cnt_skip,
                                self.cnt_fail, self.cnt_rate)):
             ttk.Label(cnt, textvariable=v, font=("", 10, "bold"))\
-                .grid(row=i // 2, column=i % 2, sticky="w", padx=4, pady=1)
+                .grid(row=0, column=i, sticky="w", padx=(0, 14), pady=1)
         self.port_stat = ttk.LabelFrame(side, text="端口")
         self._render_port_states([])
 
@@ -769,13 +796,13 @@ class App:
                 self.unit_tv.insert("", "end", iid=iid,
                                     values=(rec.get("seq"), rec.get("port") or "",
                                             (rec.get("started") or "")[11:], "", "",
-                                            "", "…", "", ""))
+                                            "…", "", ""))
             self.unit_tv.see(iid)
             return
         vals = (rec.get("seq"), rec.get("port") or "",
                 (rec.get("started") or "")[11:],
                 rec.get("chip_id") or "",
-                (rec.get("uid") or "")[:16], os.path.basename(rec.get("image") or ""),
+                (rec.get("uid") or "")[:16],
                 rec.get("result") or "", rec.get("elapsed_s") or "",
                 rec.get("reason") or "")
         if self.unit_tv.exists(iid):
