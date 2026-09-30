@@ -129,12 +129,24 @@ def make_echo_bl(handler):
 
 
 def info_payload(uid=b"\x01" * 12, flash_kib=64, app_valid=0, app_size=0, app_crc=0,
-                 ver=(0, 5, 0), seq=0):
-    """GET_INFO 67B 全量响应（status + ver3 + uid12 + flsz2 + valid1 +
-    size/crc/seq 12 + 遥测 20 + 现场 16）。"""
-    return (bytes([0x00]) + bytes(ver) + uid + struct.pack("<H", flash_kib) +
-            bytes([app_valid]) + struct.pack("<III", app_size, app_crc, seq) +
-            struct.pack("<IIIII", 0, 0, 0, 0, 0) + struct.pack("<IIII", 0, 0, 0, 0))
+                 ver=(0, 5, 0), seq=0, dev_id=None):
+    """GET_INFO 全量响应（status + ver3 + uid12 + flsz2 + valid1 + size/crc/seq 12 +
+    遥测 20 + 现场 16）。dev_id 非 None 时追加 2B 芯片身份（BL ≥ 0.5.0，ADR-021）→ 69B。"""
+    d = (bytes([0x00]) + bytes(ver) + uid + struct.pack("<H", flash_kib) +
+         bytes([app_valid]) + struct.pack("<III", app_size, app_crc, seq) +
+         struct.pack("<IIIII", 0, 0, 0, 0, 0) + struct.pack("<IIII", 0, 0, 0, 0))
+    if dev_id is not None:
+        d += struct.pack("<H", dev_id)
+    return d
+
+
+def meta_payload(seq=0, flags=0, ver=(0, 0, 0), size=0, crc=0, copy=0, dev_id=None):
+    """GET_META 响应（status + seq4 + flags4 + ver3 + size4 + crc4 + copy1 [+ dev_id 2]）。"""
+    d = (bytes([0x00]) + struct.pack("<II", seq, flags) + bytes(ver) +
+         struct.pack("<II", size, crc) + bytes([copy]))
+    if dev_id is not None:
+        d += struct.pack("<H", dev_id)
+    return d
 
 
 def _no_fw_root():
@@ -523,6 +535,28 @@ def t_info_fields():
               blp.parse_info_fields(bytes(30))]
     check("parse_info_fields 短响应一律标记 short", all(x["short"] for x in shorts))
 
+    # 芯片身份（BL ≥ 0.5.0，ADR-021）：67B 无该字段、69B 解析出来；字符串口径只在有值时追加
+    d67 = d
+    d69 = d + struct.pack("<H", 0x0410)
+    f67, f69 = blp.parse_info_fields(d67), blp.parse_info_fields(d69)
+    s67, s69 = blp.parse_info(d67), blp.parse_info(d69)
+    check("parse_info_fields：67B 无 dev_id、69B 解出 dev_id（追加式兼容）",
+          "dev_id" not in f67 and f69["dev_id"] == 0x0410
+          and len(d67) == 67 and len(d69) == 69
+          and s67 == expect and s69 == expect + " chip=0x0410",
+          f"{len(d67)}B/{len(d69)}B dev={f69.get('dev_id')}")
+
+    # GET_META：21B 旧口径无该字段、23B 解析出来；0xFFFF 显示为「未记录」
+    m21, m23 = blp.parse_meta(meta_payload()), blp.parse_meta(meta_payload(dev_id=0x0410))
+    mff = blp.parse_meta(meta_payload(dev_id=0xFFFF))
+    check("parse_meta：21B 无 dev_id、23B 解出、0xFFFF 视为未记录",
+          "dev_id" not in m21 and m23["dev_id"] == 0x0410
+          and mff["dev_id"] == 0xFFFF
+          and "未记录" in blp.meta_str(mff)
+          and blp.meta_str(m21) == ("seq=0 flags=0x00000000 app_ver=0.0.0 size=0 "
+                                    "crc=0x00000000 copy=0"),
+          blp.meta_str(mff))
+
 
 def _mk_chip(**over):
     """最小合法芯片清单（chips/<id>.json 形状），字段可覆盖。"""
@@ -566,8 +600,26 @@ def t_chip_profiles():
                    for k in man if k in profs)
         check("内置包与固件仓 chips/*.json 同值（单事实源守卫）",
               same and set(man) <= set(profs) and len(man) >= 2, f"固件仓 {sorted(man)}")
-        check("chips sync 幂等（重建文本与入库文件逐字节一致）",
-              bc.bundle_text(man) == Path(bc.BUNDLE_PATH).read_text(encoding="utf-8"))
+        # dev_id（BL 0.5.0/ADR-021）是后加的键：固件仓尚未带上它时源侧为空，此时跳过该键
+        # 逐字节比较其余字段（仍能抓住手改档案包这类漂移）；带上了则必须逐字节一致
+        import json as _json
+        rb = _json.loads(bc.bundle_text(man))
+        disk = _json.loads(Path(bc.BUNDLE_PATH).read_text(encoding="utf-8"))
+        for c in rb["chips"] + disk["chips"]:
+            c.get("device", {}).pop("dev_id", None)
+        check("chips sync 幂等（重建文本与入库文件逐字段一致；dev_id 按源侧有无参与）",
+              rb == disk)
+        src_dev = {k: v.dev_id for k, v in man.items() if v.dev_id}
+        got_dev = {p.id: p.dev_id for p in
+                   bc.load_profiles(firmware_root=_no_fw_root(), cfg={}).values()}
+        check("档案包 dev_id 与固件仓同值（源侧声明了才比）",
+              all(got_dev[k] == v for k, v in src_dev.items()),
+              f"源 {src_dev} 包 {got_dev}")
+        chk = _json.loads(bc.bundle_text({"x": bc.profile_from_chip_dict(
+            _mk_chip(device={"name": "STM32F411CE", "dev_id": "0x0431",
+                             "pack_id": "P", "cputype": "Cortex-M4"}))}))
+        check("dev_id 经档案包往返（0x0431）",
+              chk["chips"][0]["device"]["dev_id"] == "0x0431", str(chk["chips"][0]))
     else:
         check("固件仓不在同层，跳过同值/幂等检查（非失败）", True)
     bad = [("APP 区超出 Flash",
@@ -617,6 +669,43 @@ def t_detect():
     check("探查：短响应 → 判为 APP 而非 BL", (not d.ok) and "APP" in d.reason, d.reason)
     d = bc.detect_chip(make_echo_bl(lambda c, s, dd: None), profs, log=quiet)
     check("探查：无响应 → 失败", (not d.ok) and "无响应" in d.reason, d.reason)
+
+    # 芯片身份路径（ADR-021，BL ≥ 0.5.0）：先身份、后容量，解决「同容量同分区」歧义
+    def dev_info(dev, kib):
+        return make_echo_bl(lambda c, s, dd: info_payload(flash_kib=kib, dev_id=dev)
+                            if c == C_INFO else None)
+
+    d = bc.detect_chip(dev_info(0x0410, 64), profs, log=quiet)
+    check("探查：dev_id 命中 f103c8t6（身份优先于容量）",
+          d.ok and d.profile.id == "f103c8t6" and d.method == "dev_id", d.reason)
+
+    def with_dev(pid, dev, kib, app_base, app_size):
+        return bc.ChipProfile(id=pid, name=pid, dev_id=dev, flash_base=0x08000000,
+                              flash_kib=kib, sram_base=0x20000000, sram_size=0x5000,
+                              app_base=app_base, app_size=app_size,
+                              erase_entries=[{"size": 16384, "count": 4,
+                                              "typical_erase_ms": 300}])
+    # 同容量、同分区几何的两片（F411CE / F407VE 的真实情形）：只有身份能分开
+    twins2 = {"f411": with_dev("f411", 0x0431, 512, 0x08010000, 0x70000),
+              "f407": with_dev("f407", 0x0413, 512, 0x08010000, 0x70000)}
+    d = bc.detect_chip(dev_info(0x0413, 512), twins2, log=quiet)
+    check("探查：同容量同分区的两片靠 dev_id 一次分开（不再报歧义）",
+          d.ok and d.profile.id == "f407" and d.method == "dev_id", d.reason)
+    d = bc.detect_chip(dev_info(0x0499, 512), twins2, log=quiet)
+    check("探查：档案已声明身份却不匹配 → 明确失败（不退回容量猜测）",
+          (not d.ok) and "与档案不符" in d.reason, d.reason)
+    # 旧档案包（dev_id 全空）+ 新固件上报身份 → 退回容量路径（既有行为不变）
+    old_pack = {"f103c8t6": bc.ChipProfile(
+        id="f103c8t6", name="F103C8", flash_base=0x08000000, flash_kib=64,
+        sram_base=0x20000000, sram_size=0x5000, app_base=0x08004000, app_size=0xB800,
+        erase_entries=[{"size": 1024, "count": 64, "typical_erase_ms": 4}])}
+    d = bc.detect_chip(dev_info(0x0410, 64), old_pack, log=quiet)
+    check("探查：旧档案包未声明身份 → 退回容量指纹（兼容）",
+          d.ok and d.profile.id == "f103c8t6" and d.method == "flash", d.reason)
+    # 旧固件（无 dev_id 字段）：行为与 1.5.0 相同（容量指纹）
+    d = bc.detect_chip(info_only(64), profs, log=quiet)
+    check("探查：无 dev_id（BL < 0.5.0）→ 仍走容量指纹（行为不回退）",
+          d.ok and d.profile.id == "f103c8t6" and d.method == "flash", d.reason)
 
     def twin(pid, app_size):
         return bc.ChipProfile(id=pid, name=pid, flash_base=0x08000000, flash_kib=64,
