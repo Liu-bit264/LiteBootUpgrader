@@ -104,6 +104,11 @@ Flipping any byte of the image makes the firmware answer `SIGN_ERROR` without pe
 sign-enabled firmware either. Physical/debug-port attacks and rollback are out of scope
 (ADR-020 threat model).
 
+> Validation status: host-side unit tests pass (keygen artifact format, signature →
+> public-key verification, tamper invalidation, 0x11 frame layout LEN=72); **no on-target
+> HIL run yet** — the firmware-side pending item is tracked in its
+> `docs/dev/test_plan.md` §5.1.
+
 ### GUI vs CLI Capability Matrix
 
 | Interface | Coverage |
@@ -140,7 +145,7 @@ Artifacts land in `dist\` (`build/` and `*.spec` are intermediates, not committe
 |---|---|
 | Scope | Works over the LiteBootLoader upgrade protocol (VER 0x01) and is **decoupled from the chip model**: any LiteBootLoader BL implementing this protocol is supported; validated combinations = BL 0.3.0 + STM32F103C8T6 (full flow) and the STM32F411CEU6 minimal package (info/upgrade/jump/setmeta round-trip); multi-chip parameterization follows the firmware repo's CSP roadmap |
 | Protocol version | VER 0x01 (firmware repo `docs/protocol.md`; 0x10 OTA_QUERY available with BL 0.2.0+) |
-| Companion firmware | LiteBootLoader BL 0.3.0+ (0.1.0/0.2.0 also work, without the `ota` query and the Bluetooth channel); **Bluetooth links require the firmware to enable the BT channel** (`BL_TRANSPORT_BT_EN=1`; not enabled in the default example config since 0.3.0 — see porting_guide §3.1) |
+| Companion firmware | LiteBootLoader BL 0.3.0+ (0.1.0/0.2.0 also work, without the `ota` query and the Bluetooth channel); **Bluetooth links require the firmware to enable the BT channel** (`BL_TRANSPORT_BT_EN=1`; not enabled in the default example config since 0.3.0 — see porting_guide §3.1); **signed upgrades (`--key`) additionally require BL 0.4.0+ with `BL_SIGN_EN=1`** in that support package (see "Signed verification" above; F411 only for now) |
 | Image limit | Currently validated against the STM32F103C8T6 partition, 46 KiB (0xB800), auto-padded to 4-byte alignment with 0xFF — the F411CEU6 (448K partition) upgrade/jump flow is verified but images remain subject to this 46K cap; `--chip` parameterization on the firmware repo's CSP roadmap |
 | F411 known limits | On the F411CEU6 the `selftest` "out-of-range guard" step false-FAILs (the fixture hardcodes the F103 `APP_SIZE=0xB800`; that offset is a legal write inside the 448K APP region), and `bl_powerloss_drill.py` is unusable because its pyocd target name is hardcoded to F103 — both are fixed together with the `--chip` parameterization |
 | Image verification | CRC-32/ISO-HDLC (zlib-compatible); frame check CRC16/MODBUS |
