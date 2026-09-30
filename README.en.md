@@ -70,9 +70,11 @@ detected chip, flashes units back to back and records every result for traceabil
 
 The two mode switches are **independent and can be enabled together** (ticking one never
 drags the other in; you can still enter advanced mode while factory mode is on, and vice
-versa). With both on, all four panels are present: the window shrinks to fit the screen
-(no hardcoded height), the panel area scrolls with the mouse wheel when it does not fit,
-and the log pane and status line stay pinned at the bottom:
+versa). With both on, all four panels are present, laid out as a **left panel area plus a
+right sidebar**: the sidebar keeps the status and the device result table visible at all
+times (the two things you watch during a batch — they never scroll away), the left panel
+area scrolls with the mouse wheel when it does not fit, and the log pane and status line
+stay pinned at the bottom:
 
 ![GUI factory + advanced mode](docs/gui_factory_adv.png)
 
@@ -88,11 +90,16 @@ and the log pane and status line stay pinned at the bottom:
 - **Advanced panel (advanced mode only)**: INFO / META / OTA query / ERASE (double
   confirmation) / SELFTEST / VERIFY / LISTEN / RAW / SETMETA, plus baud-rate and
   pace(ms) options — behavior aligned one-to-one with the CLI;
-- **Factory panel (factory mode only)**: chip & preset-image table, batch options, device
-  result table plus a **right-hand status column** (headline state / progress bar /
-  OK·SKIP·FAIL·pass rate / per-port state); ports are **multi-select** (N ports = N
-  parallel sessions); start/stop share the `busy` mutex so factory and
-  advanced operations never fight over the serial port;
+- **Factory panel (factory mode only)**: chip & preset-image table and batch options on the
+  left; a **right sidebar** pins the status block (headline state / progress bar /
+  OK·SKIP·FAIL·pass rate / per-port state) and the device result table (# / port / time /
+  chip / UID / result / elapsed / note — image and SHA-256 live in the record file and the
+  log); ports are **multi-select** (N ports = N parallel sessions); start/stop share the
+  `busy` mutex so factory and advanced operations never fight over the serial port;
+- **Window and scrolling**: the window is sized to the screen (no hardcoded height), the
+  left panel area scrolls with the wheel when it does not fit (a horizontal scrollbar
+  appears if needed), and the status line and log stay pinned at the bottom — on small
+  screens or with both modes on, no control is lost;
 - **Serial exclusivity**: close VOFA+ / other serial monitors first (a COM port is exclusive).
 
 > Factory/advanced isolation means **separated capabilities, one shared resource**: the
@@ -294,7 +301,7 @@ uv run --python 3.12 --with pyserial bl_upgrade.py factory \
 |---|---|
 | GUI basic mode (default) | One-click upgrade, jump to APP, reset, PING + serial enumeration/refresh, connection type (wired/Bluetooth), image CRC32 preview, progress bar/log pane |
 | GUI advanced mode (tick, confirm, UI restart) | On top of basic mode: all 10 CLI debug/diagnostic operations (info / meta / ota / erase / verify / selftest / listen / raw / setmeta / **keygen**) plus baud-rate and pace options, and an optional signing key for upgrades — **feature parity with the CLI** |
-| GUI factory mode (tick, confirm, UI restart) | Chip & preset-image table, batch flashing (board-swap trigger / skip-if-current / resume / jump after flash / APP version / signing key / record file), start·stop, live counters and pass rate, right-hand status column (per-port state), device result table — **the same engine as the CLI `factory`**; ports are multi-select (N ports = N parallel sessions); can be enabled together with advanced mode |
+| GUI factory mode (tick, confirm, UI restart) | Chip & preset-image table and batch flashing (board-swap trigger / skip-if-current / resume / jump after flash / APP version / signing key / record file) on the left, with a right sidebar holding the status block (headline state / progress bar / counters / per-port state) and the device result table — **the same engine as the CLI `factory`**; ports are multi-select (N ports = N parallel sessions); can be enabled together with advanced mode |
 | CLI | All 16 subcommands + `-h/--help`, `--version`, `--conn`, `--key`, `--chip`, `--profiles` |
 
 ### Retry & Timeout (mirrors the firmware repo's docs/protocol.md §6)
