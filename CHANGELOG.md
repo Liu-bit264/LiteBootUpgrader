@@ -21,6 +21,30 @@
   与断电钻具的 pyocd 目标名均硬编码 F103（F411 上 selftest 的「越界防护」步假 FAIL、
   钻具不可用）
 
+## [1.4.0] - 2026-09-30
+
+签名验签集成（配套固件 LiteBootLoader 0.4.0 ADR-020）。协议 VER 0x01 不变。
+
+### Added
+
+- **`keygen` 子命令（密钥对生成器模块，用户要求）**：生成 P-256 测试密钥对——私钥
+  PEM（本地保管）+ 公钥本地头 `bl_sign_pubkey_local.h`（写入固件仓芯片端口目录，
+  与固件 `core/bl_sign.c` 消费约定一致；注释刻意全 ASCII——armcc 以本地编码读源
+  文件，UTF-8 中文注释有吞换行风险）。**密钥任何形态不入库**（用户要求，ADR-020）。
+- **`upgrade --key <pem>` 签名校验**：写块完成后改发 `0x11 VERIFY_SIGNED`
+  （DATA = size+crc32+signature 64B r‖s 大端），auth 置位方可跳转；`SIGN_ERROR(0x06)`
+  时给出排查提示（固件非 BL_SIGN_EN=1 / 公钥不配对）。cryptography 懒加载——
+  非签名路径零新依赖；超时/重试沿用 VERIFY 档（T_VERIFY 5s ×3 尝试）。
+- **GUI 同步**：高级模式新增「签名私钥（可选）」行（浏览选择 + 「生成密钥对」按钮，
+  走 save 对话框），一键升级自动携带——与 CLI 功能同步。
+
+### Changed
+
+- 主机侧单测扩至 45 项（keygen 产物格式、签名→公钥回验/篡改失效——经
+  裸 r‖s ↔ DER 往返完整验证固件消费口径、0x11 帧结构 LEN=72/CMD/CRC、
+  keygen/--key CLI 解析）；签名用例在缺 cryptography 时自动跳过。
+- CMD 表 + `verify_signed`、STATUS 表 + `SIGN_ERROR`。
+
 ## [1.3.1] - 2026-09-30
 
 审计 2026-09-29（主仓 `docs/review/audit-2026-09-29.md`，本地文档）修复。协议 VER 0x01
