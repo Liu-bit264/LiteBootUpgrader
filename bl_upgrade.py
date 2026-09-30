@@ -24,6 +24,7 @@ upgrade 会自动识别对端：若 APP 正在运行，先走"请求回 BL"流�
   uv run --python 3.12 --with pyserial --with cryptography bl_upgrade.py keygen
 """
 import argparse
+import os
 import struct
 import sys
 import time
@@ -52,7 +53,7 @@ RETRY_ATTEMPTS = 3
 RETRY_DELAY = 2.2
 T_DEFAULT, T_ERASE, T_VERIFY = 1.0, 5.0, 5.0
 
-VERSION = "1.4.0"          # LiteBootUpgrader 版本（--version 与 description 共用）
+VERSION = "1.5.0"          # LiteBootUpgrader 版本（--version 与 description 共用）
 
 # ---- 签名验签（1.4.0，ADR-020；cryptography 懒加载，非签名路径零依赖） ----
 CRYPTO_HINT = ("uv run --python 3.12 --with pyserial --with cryptography "
@@ -166,6 +167,12 @@ OPEN_ATTEMPTS_BT = 3       # 蓝牙 SPP 打开重试次数（重连竞态窗口�
 OPEN_RETRY_DELAY = 0.5     # 蓝牙打开重试间隔（秒）
 
 
+def stop_requested(should_stop) -> bool:
+    """停止请求判定（批量/工厂模式停止按钮共用）：None=不启用。
+    注意：串口读本身不可中断，最坏停止时延 = 当前命令超时（≤5 s）。"""
+    return bool(should_stop is not None and should_stop())
+
+
 class BootLoader:
     def __init__(self, port: str, baud: int = 115200, pace_ms: int = 0,
                  conn: str = "serial"):
@@ -228,10 +235,14 @@ class BootLoader:
                   f"（疑似迟到响应，丢弃继续等待）")
 
     def cmd_retry(self, name: str, data: bytes = b"", timeout: float = 1.0,
-                  attempts: int = RETRY_ATTEMPTS, log=print):
+                  attempts: int = RETRY_ATTEMPTS, log=print, should_stop=None):
         """带重试的命令：超时后等 ≥2.1s（BL 帧内超时复位半帧）再重发。
-        收到状态响应（含错误码）不重试——那是真实答复。"""
+        收到状态响应（含错误码）不重试——那是真实答复。
+        should_stop 非 None 时在每次尝试与重发等待前检查，返回 None 表示被中止。"""
         for i in range(attempts):
+            if stop_requested(should_stop):
+                log(f"    [!] {name} 中止（已请求停止）")
+                return None
             r = self.cmd(name, data, timeout=timeout)
             if r is not None:
                 return r
@@ -284,6 +295,40 @@ class BootLoader:
 
 # ---- 响应解析 ----
 
+def parse_info_fields(d: bytes) -> dict:
+    """GET_INFO 响应的结构化解析（parse_info 的机器可读同源版本；芯片探查/工厂模式消费）。
+
+    基础字段至少 31 B（status + ver(3) + uid(12) + flsz(2) + valid(1) + size/crc/seq(12)）；
+    更短的响应（通常是 APP 迷你响应器所答）只置 short=True 并带回首字节状态。
+    诊断扩展区按实际 LEN 解析（最小实现只回 31 B，protocol.md §5.2）。"""
+    info = {"raw_len": len(d)}
+    if not d:
+        info["short"] = True
+        info["status"] = None
+        return info
+    info["status"] = d[0]
+    if len(d) < 31:
+        # 短响应防御（审计 2026-09-29 P3-2）：否则 unpack_from(d,19) 越界
+        info["short"] = True
+        return info
+    info["short"] = False
+    info["bl_version"] = (d[1], d[2], d[3])
+    info["uid"] = bytes(d[4:16])
+    info["flash_kib"] = d[16] | (d[17] << 8)
+    info["app_valid"] = bool(d[18])
+    info["app_size"], info["app_crc32"], info["meta_seq"] = \
+        struct.unpack_from("<III", d, 19)
+    if len(d) >= 39:
+        info["rx_total"], info["delivered"] = struct.unpack_from("<II", d, 31)
+    if len(d) >= 47:
+        info["crc_fail"], info["byte_timeout"] = struct.unpack_from("<II", d, 39)
+    if len(d) >= 51:
+        (info["timeout_pending"],) = struct.unpack_from("<I", d, 47)
+    if len(d) >= 67:
+        info["timeout_detail"] = struct.unpack_from("<IIII", d, 51)
+    return info
+
+
 def parse_info(d: bytes) -> str:
     if len(d) < 31:
         # 短响应防御（审计 2026-09-29 P3-2）：基础字段至少 31B（status+ver(4)+uid(12)
@@ -291,27 +336,22 @@ def parse_info(d: bytes) -> str:
         # 1B 状态响应通常是 APP 迷你响应器所答
         return (f"短响应（{len(d)}B，status={st_name(d[0]) if d else '空'}）"
                 f"—— 对端疑似 APP 而非 BL")
-    ma, mi, pa = d[1], d[2], d[3]
-    uid = bytes(d[4:16])
-    flsz = d[16] | (d[17] << 8)
-    valid = d[18]
-    size, crc, seq = struct.unpack_from("<III", d, 19)
+    f = parse_info_fields(d)
+    ma, mi, pa = f["bl_version"]
     extra = ""
     if len(d) >= 39:
-        rx, vf = struct.unpack_from("<II", d, 31)
-        extra = f" rx={rx} vf={vf}"
+        extra = f" rx={f['rx_total']} vf={f['delivered']}"
     if len(d) >= 47:
-        cfc, bto = struct.unpack_from("<II", d, 39)
-        extra += f" crcfail={cfc} bytetimeout={bto}"
+        extra += f" crcfail={f['crc_fail']} bytetimeout={f['byte_timeout']}"
     if len(d) >= 51:
-        (tpd,) = struct.unpack_from("<I", d, 47)
-        extra += f" pend={tpd}"
+        extra += f" pend={f['timeout_pending']}"
     if len(d) >= 67:
-        gap, tpend, tstate, tgot = struct.unpack_from("<IIII", d, 51)
+        gap, tpend, tstate, tgot = f["timeout_detail"]
         extra += (f" | 超时现场: 饥饿{gap}ms 缓冲{tpend}B 状态{tstate} 已收{tgot}")
-    return (f"BL v{ma}.{mi}.{pa} flash={flsz}KB app_valid={valid} "
-            f"app_size={size} app_crc={crc:#010x} seq={seq} "
-            f"uid={uid.hex().upper()}{extra}")
+    return (f"BL v{ma}.{mi}.{pa} flash={f['flash_kib']}KB "
+            f"app_valid={1 if f['app_valid'] else 0} "
+            f"app_size={f['app_size']} app_crc={f['app_crc32']:#010x} seq={f['meta_seq']} "
+            f"uid={f['uid'].hex().upper()}{extra}")
 
 
 def parse_meta(d: bytes) -> dict:
@@ -385,8 +425,13 @@ def timeout_detail(bl: BootLoader):
 
 # ---- selftest：升级流程硬件在环检验（二分定位版） ----
 
-def selftest(bl: BootLoader) -> int:
-    print(f"== 升级流程检验 selftest（{bl.s.port} @ {bl.s.baudrate}）==")
+def selftest(bl: BootLoader, app_size: int | None = None) -> int:
+    """15 步升级流程硬件在环自检。app_size 为芯片档案的 APP 分区大小
+    （None 时用模块常量 APP_SIZE=F103 46 KiB）——F411 等大分区芯片须传档案值，
+    否则越界防护步会拿 F103 的偏移当越界点而假 FAIL。"""
+    limit = APP_SIZE if app_size is None else app_size
+    print(f"== 升级流程检验 selftest（{bl.s.port} @ {bl.s.baudrate}，"
+          f"APP 区 {limit // 1024} KiB）==")
     results = []
 
     def step(name, ok, evidence):
@@ -404,7 +449,7 @@ def selftest(bl: BootLoader) -> int:
          "无响应" if r is None else
          f"status={st_name(r['data'][0])} proto_ver={r['data'][1]:#04x}")
 
-    # 2. ERASE_APP（46 页，预计 1~2s）
+    # 2. ERASE_APP（整片 APP 区；F103 46K/1K 页约 1~2s，F411 448K 大扇区约 4s）
     t0 = time.time()
     r = bl.cmd("erase", timeout=8.0)
     step("ERASE_APP", r is not None and r["data"][0] == 0,
@@ -493,11 +538,11 @@ def selftest(bl: BootLoader) -> int:
     step("META 持久化", m is not None and m["size"] == 512 and m["crc"] == good,
          meta_str(m) if m else "无响应/状态异常")
 
-    # 9. 越界防护：offset = APP_SIZE 应拒绝
-    r = bl.cmd("write", struct.pack("<I", APP_SIZE) + b"\x00" * 4)
+    # 9. 越界防护：offset = 本芯片 APP 区大小（分区末尾）应被拒绝
+    r = bl.cmd("write", struct.pack("<I", limit) + b"\x00" * 4)
     step("WRITE 越界防护", r is not None and r["data"][0] == 0x03,
          "无响应" if r is None else
-         f"status={st_name(r['data'][0])}（期望 RANGE_ERROR）")
+         f"offset={limit} status={st_name(r['data'][0])}（期望 RANGE_ERROR）")
 
     # 10. CRC 损坏帧应被静默丢弃
     bl.seq = (bl.seq + 1) & 0xFF
@@ -536,10 +581,13 @@ def selftest(bl: BootLoader) -> int:
 
 # ---- 单命令 ----
 
-def ensure_bl(bl: BootLoader, log=print) -> bool:
+def ensure_bl(bl: BootLoader, log=print, should_stop=None) -> bool:
     """确认对端处于 BL；APP 在跑则自动走'请求回 BL'流程（external_interface.md §5）。"""
     log("探测对端…")
     for attempt in range(RETRY_ATTEMPTS):
+        if stop_requested(should_stop):
+            log("[!] 探测中止（已请求停止）")
+            return False
         r = bl.cmd("info", timeout=T_DEFAULT)
         if r is not None:
             st = _resp_status(r, "GET_INFO")
@@ -566,33 +614,51 @@ def ensure_bl(bl: BootLoader, log=print) -> bool:
 
 
 def run_upgrade(bl: BootLoader, path: str, log=print, progress=None,
-                key_path: str | None = None) -> int:
+                key_path: str | None = None, app_size: int | None = None,
+                should_stop=None) -> int:
     """一键升级完整流程（protocol.md §7 主机侧约定的唯一实现）：
     ensure_bl → ERASE → 逐块 WRITE → VERIFY / VERIFY_SIGNED。
     key_path 非 None 时走签名校验（0x11，固件需 BL_SIGN_EN=1 且公钥配对）。
+    app_size 非 None 时按其（芯片档案的 APP 分区大小）做镜像上限判定，否则用模块
+    常量 APP_SIZE（F103 46 KiB）——大分区芯片须传档案值。
+    should_stop 非 None 时在每步之间检查，被请求停止则回 1（已写入的内容由下一次
+    整片重刷覆盖，协议全程幂等）。
     progress(done, total) 在每个块成功后回调（GUI 用）；返回 0=成功。"""
+    limit = APP_SIZE if app_size is None else app_size
     with open(path, "rb") as f:
         img = f.read()
-    if len(img) == 0 or len(img) > APP_SIZE:
-        raise ValueError(f"镜像大小 {len(img)} 超出 1B~{APP_SIZE}B")
+    if len(img) == 0 or len(img) > limit:
+        raise ValueError(f"镜像大小 {len(img)} 超出 1B~{limit}B")
     if len(img) % 4:
         img += b"\xFF" * (4 - len(img) % 4)     # VERIFY 要求 4 字节对齐
     crc = zlib.crc32(img) & 0xFFFFFFFF
     log(f"镜像 {len(img)}B crc32={crc:#010x}")
 
-    if not ensure_bl(bl, log=log):
+    if stop_requested(should_stop):
+        log("[!] 已停止（未开始写入）")
+        return 1
+    if not ensure_bl(bl, log=log, should_stop=should_stop):
         return 1
 
     log("擦除 APP 区…")
-    r = bl.cmd_retry("erase", timeout=T_ERASE, log=log)
+    r = bl.cmd_retry("erase", timeout=T_ERASE, log=log, should_stop=should_stop)
+    if stop_requested(should_stop):
+        log("[!] 已停止")
+        return 1
     st = _resp_status(r, "erase")
     log("erase:", st_name(st) if st is not None else "无响应（重试耗尽）")
     if st is None or st:
         return 1
     total = len(img)
     for off in range(0, total, CHUNK_PAYLOAD):
+        if stop_requested(should_stop):
+            log(f"[!] 已停止（已写入 {off}/{total} B，内容不完整；重新升级会整片重刷）")
+            return 1
         r = bl.cmd_retry("write", struct.pack("<I", off) + img[off:off + CHUNK_PAYLOAD],
-                         timeout=2.0, log=log)
+                         timeout=2.0, log=log, should_stop=should_stop)
+        if stop_requested(should_stop):
+            log("[!] 已停止")
+            return 1
         st = _resp_status(r, "write")
         if st is None or st:
             log(f"write @{off} 失败: "
@@ -604,7 +670,7 @@ def run_upgrade(bl: BootLoader, path: str, log=print, progress=None,
         sig = sign_image_bytes(img, key_path)
         log("验签…（VERIFY_SIGNED，ADR-020）")
         r = bl.cmd_retry("verify_signed", struct.pack("<II", total, crc) + sig,
-                         timeout=T_VERIFY, log=log)
+                         timeout=T_VERIFY, log=log, should_stop=should_stop)
         st = _resp_status(r, "verify_signed")
         if st == 0:
             if len(r["data"]) < 9:
@@ -620,7 +686,8 @@ def run_upgrade(bl: BootLoader, path: str, log=print, progress=None,
                 "确认固件为 BL_SIGN_EN=1 构建且 --key 与其公钥配对")
         return 1
     log("校验…")
-    r = bl.cmd_retry("verify", struct.pack("<II", total, crc), timeout=T_VERIFY, log=log)
+    r = bl.cmd_retry("verify", struct.pack("<II", total, crc), timeout=T_VERIFY,
+                     log=log, should_stop=should_stop)
     st = _resp_status(r, "verify")
     if st == 0:
         if len(r["data"]) < 9:
@@ -633,9 +700,10 @@ def run_upgrade(bl: BootLoader, path: str, log=print, progress=None,
     return 1
 
 
-def cmd_upgrade(bl: BootLoader, path: str, key_path: str | None = None) -> int:
+def cmd_upgrade(bl: BootLoader, path: str, key_path: str | None = None,
+                app_size: int | None = None) -> int:
     try:
-        return run_upgrade(bl, path, key_path=key_path)
+        return run_upgrade(bl, path, key_path=key_path, app_size=app_size)
     except ValueError as e:
         sys.exit(f"[X] {e}")
     except RuntimeError as e:
@@ -644,13 +712,29 @@ def cmd_upgrade(bl: BootLoader, path: str, key_path: str | None = None) -> int:
         sys.exit(f"[X] 打开镜像失败：{e}")
 
 
+def parse_app_version(s: str) -> tuple:
+    """'1.2.3' → (1, 2, 3)（SET_META 0x02 的 APP 版本三字段）；非法抛 ValueError。"""
+    parts = (s or "").strip().split(".")
+    if len(parts) != 3:
+        raise ValueError(f"APP 版本需 M.m.p 形式：{s!r}")
+    try:
+        v = tuple(int(p) for p in parts)
+    except ValueError:
+        raise ValueError(f"APP 版本需为十进制整数：{s!r}")
+    if any(not 0 <= x <= 255 for x in v):
+        raise ValueError(f"APP 版本各字段需 0~255：{s!r}")
+    return v
+
+
 def build_parser():
     ap = argparse.ArgumentParser(description=f"LiteBootLoader 上位机 v{VERSION}（LiteBootUpgrader）")
     ap.add_argument("command",
                     choices=["ping", "info", "meta", "erase", "verify",
                              "upgrade", "jump", "reset", "selftest",
-                             "listen", "raw", "setmeta", "ota", "keygen"])
-    ap.add_argument("arg", nargs="?", help="upgrade: 镜像文件；verify: size")
+                             "listen", "raw", "setmeta", "ota", "keygen",
+                             "chips", "factory"])
+    ap.add_argument("arg", nargs="?",
+                    help="upgrade: 镜像文件；verify: size；chips: list|sync|detect")
     ap.add_argument("arg2", nargs="?", help="verify: crc32 十六进制")
     ap.add_argument("--port", default="COM4")
     ap.add_argument("--baud", type=int, default=115200)
@@ -661,6 +745,36 @@ def build_parser():
                          "打开失败自动重试）")
     ap.add_argument("--key", help="upgrade：ECDSA P-256 私钥 PEM——启用签名校验"
                                  "（0x11 VERIFY_SIGNED，固件需 BL_SIGN_EN=1 且公钥配对）")
+    ap.add_argument("--chip", help="芯片支持包 id（如 f103c8t6）或 auto：按档案驱动 APP 分区"
+                                  "大小与镜像体检；auto = 先确保进入 BL 再按 GET_INFO 探查")
+    ap.add_argument("--profiles", help="芯片档案文件（单芯片清单或档案包）；缺省按 bl_chip.py "
+                                      "的搜索顺序：工厂配置 → 固件仓 chips/*.json → 内置档案包")
+    ap.add_argument("--firmware-root", help="固件仓根目录（默认 ../LiteBootLoader）")
+    ap.add_argument("--config", help="工厂配置文件（缺省：工具旁 factory/local.json → "
+                                    "~/.litebootupgrader_factory.json）")
+    ap.add_argument("--no-probe", action="store_true",
+                    help="容量撞车时不发 VERIFY 探查（直接报歧义，要求人工指定芯片）")
+    ap.add_argument("--force-image", action="store_true",
+                    help="跳过镜像体检（向量表/大小判定为应急口；CRC/SHA 仍照算）")
+    # ---- 工厂批量（factory 子命令） ----
+    ap.add_argument("--records", default="factory/records/records.csv",
+                    help="factory：结果记录 CSV（追加写入，Excel 友好；默认 "
+                         "factory/records/records.csv）")
+    ap.add_argument("--jsonl", help="factory：结果记录 JSONL（追加写入，机器可读）")
+    ap.add_argument("--count", type=int, default=0, help="factory：烧录台数上限（0=不限）")
+    ap.add_argument("--trigger", choices=["poll", "newport"], default="poll",
+                    help="factory：换板触发——poll=同端口轮询（默认，适配器共用一根线）；"
+                         "newport=检测到新串口（每板一个转换器/板载 CDC）")
+    ap.add_argument("--image", action="append", default=[], metavar="CHIP=PATH",
+                    help="factory：芯片→预设镜像映射（可重复，如 f103c8t6=app.bin）")
+    ap.add_argument("--skip-uptodate", action="store_true",
+                    help="factory：设备 APP 有效且 CRC32 与目标镜像一致时跳过写入")
+    ap.add_argument("--resume", action="store_true",
+                    help="factory：按 --records 既有记录跳过已成功烧录的 UID（断点续烧）")
+    ap.add_argument("--auto-jump", action="store_true", help="factory：每台校验后自动跳转 APP")
+    ap.add_argument("--app-version", metavar="M.m.p",
+                    help="factory：烧录后写入 APP 版本（SET_META 0x02），如 1.2.3")
+    ap.add_argument("--yes", action="store_true", help="factory：跳过开工前确认（无人值守）")
     ap.add_argument("--out-key", default="sign_test_key.pem",
                     help="keygen：私钥 PEM 输出路径（默认 ./sign_test_key.pem）")
     ap.add_argument("--out-header",
@@ -671,6 +785,139 @@ def build_parser():
     return ap
 
 
+# ---- 芯片档案 / 工厂批量：子命令实现（惰性导入 bl_chip/bl_factory，避免循环依赖） ----
+
+def _load_profiles(a, log=None) -> dict:
+    import bl_chip
+    try:
+        return bl_chip.load_profiles(explicit=a.profiles, firmware_root=a.firmware_root,
+                                     local=a.config, log=log)
+    except bl_chip.ChipError as e:
+        sys.exit(f"[X] 芯片档案加载失败：{e}")
+
+
+def _resolve_chip(a, bl, profiles, log=print):
+    """--chip 解析：auto 先确保对端在 BL（APP 在跑会自动请求回 BL）再探查。"""
+    import bl_chip
+    if not a.chip:
+        return None, ""
+    if a.chip == "auto" and not ensure_bl(bl, log=log):
+        return None, "[X] --chip auto 需对端先进入 BL（探测失败）"
+    try:
+        return bl_chip.resolve_chip_arg(a.chip, bl, profiles,
+                                        allow_probe=not a.no_probe, log=log)
+    except bl_chip.ChipError as e:
+        sys.exit(f"[X] {e}")
+
+
+def cmd_chips(a) -> int:
+    """chips list|sync|detect —— 档案查看/生成与芯片探查。"""
+    import bl_chip
+    what = (a.arg or "list").lower()
+    if what == "sync":
+        try:
+            bl_chip.sync_bundle(firmware_root=a.firmware_root)
+        except bl_chip.ChipError as e:
+            sys.exit(f"[X] {e}")
+        return 0
+    if what == "detect":
+        profiles = _load_profiles(a)
+        bl = BootLoader(a.port, a.baud, a.pace, a.conn)
+        try:
+            if not ensure_bl(bl, log=lambda m: None):
+                print("[X] 无法确认对端为 BL（APP 在跑时会自动请求回 BL；仍失败请复位）")
+                return 1
+            d = bl_chip.detect_chip(bl, profiles, allow_probe=not a.no_probe, log=print)
+        finally:
+            bl.s.close()
+        if d.ok:
+            print(f"芯片：{d.profile.id}（{d.profile.name}）—— 命中方式：{d.reason}")
+            print(f"    {d.profile.describe()}")
+            if d.raw:
+                print(f"    {parse_info(d.raw)}")
+            return 0
+        print(f"[X] 未能确定芯片：{d.reason}")
+        if d.info and not d.info.get("short"):
+            print(f"    Flash={d.info['flash_kib']} KiB "
+                  f"UID={d.info['uid'].hex().upper()}")
+        print(f"    已有档案：{', '.join(sorted(profiles)) or '（无）'}")
+        return 1
+    if what != "list":
+        sys.exit(f"[X] 未知 chips 子命令：{what}（可用 list|sync|detect）")
+    profiles = _load_profiles(a, log=print)
+    if not profiles:
+        print("[X] 未发现任何芯片档案：用 --firmware-root 指向固件仓，或 --profiles 指定文件")
+        return 1
+    print(f"芯片档案 {len(profiles)} 片（搜索顺序：显式 → 工厂配置 → 固件仓 → 内置包）：")
+    for p in sorted(profiles.values(), key=lambda x: x.id):
+        print(f"  {p.describe()}")
+        extra = f"擦除合计约 {p.erase_ms()} ms；pyocd 目标 {p.pyocd_target or '—'}"
+        if p.example_image:
+            extra += f"；示例镜像 {p.example_image}"
+        print(f"      {extra}")
+        print(f"      来源：{p.source}")
+    return 0
+
+
+def cmd_factory(a) -> int:
+    """factory —— 无人值守批量刷写（GUI 工厂模式同一引擎）。"""
+    import bl_chip
+    import bl_factory
+    profiles = _load_profiles(a, log=print)
+    if not profiles:
+        sys.exit("[X] 无芯片档案：用 --firmware-root 或 --profiles 指定（先跑 `chips list` 看看）")
+    cfg = bl_chip.load_factory_config(a.config)
+    image_map = dict(cfg.get("images") or {})
+    for item in a.image:
+        if "=" not in item:
+            sys.exit(f"[X] --image 需 CHIP=PATH 形式：{item!r}")
+        k, v = item.split("=", 1)
+        image_map[k.strip()] = os.path.normpath(v.strip())
+    try:
+        app_ver = parse_app_version(a.app_version) if a.app_version else None
+    except ValueError as e:
+        sys.exit(f"[X] {e}")
+    opts = bl_factory.Options(
+        chip_id=(a.chip or "auto"), trigger=a.trigger, image_map=image_map,
+        skip_uptodate=a.skip_uptodate, auto_jump=a.auto_jump, app_version=app_ver,
+        key_path=a.key, force_image=a.force_image, allow_probe=not a.no_probe,
+        count=a.count, resume=a.resume)
+    records = a.records
+    kinds = {"poll": "同端口轮询（换板靠 UID 变化识别）",
+             "newport": "检测到新串口即开工"}
+    print("== 工厂批量刷写 ==")
+    print(f"  端口 {a.port}（{a.conn} @ {a.baud}）；触发：{kinds[a.trigger]}；"
+          f"芯片：{opts.chip_id}")
+    print(f"  预设镜像：{image_map or '（未配置——检查到未配置预设的芯片会停下）'}")
+    print(f"  记录：{records}" + (f" + {a.jsonl}" if a.jsonl else "")
+          + ("；跳过已是最新" if a.skip_uptodate else "")
+          + ("；断点续烧" if a.resume else "")
+          + ("；刷完跳转 APP" if a.auto_jump else ""))
+    if not a.yes:
+        try:
+            input("按回车开始（Ctrl+C 取消）…")
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消")
+            return 130
+    writer = bl_factory.RecordWriter(records, a.jsonl) if (records or a.jsonl) else None
+    sess = bl_factory.BatchSession(
+        profiles, opts, records=writer, log=print,
+        on_state=lambda code, text: print(f"[状态] {text}"))
+    try:
+        summary = sess.run(a.port)
+    except bl_chip.ChipError as e:
+        sys.exit(f"[X] {e}")
+    except OSError as e:
+        sys.exit(f"[X] 串口打开失败：{e}")
+    if writer is not None:
+        writer.close()
+    print(f"== 批量结果：成功 {summary.ok} / 跳过 {summary.skip} / 失败 {summary.fail}"
+          f"（共 {summary.total} 台，用时 {summary.elapsed_s:.1f}s）==")
+    if records and summary.total:
+        print(f"   记录已写入 {records}")
+    return 0 if summary.fail == 0 else 1
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -678,10 +925,22 @@ def main():
         pass
     a = build_parser().parse_args()
 
-    if a.command == "selftest":
-        sys.exit(selftest(BootLoader(a.port, a.baud, a.pace, a.conn)))
     if a.command == "keygen":
         sys.exit(cmd_keygen(a.out_key, a.out_header))
+    if a.command == "chips":
+        sys.exit(cmd_chips(a))
+    if a.command == "factory":
+        sys.exit(cmd_factory(a))
+
+    profiles = _load_profiles(a) if (a.chip or a.profiles or a.firmware_root) else {}
+    if a.command == "selftest":
+        bl = BootLoader(a.port, a.baud, a.pace, a.conn)
+        prof, why = _resolve_chip(a, bl, profiles)
+        if why:
+            print(why)
+        if a.chip and prof is None:
+            sys.exit(1)
+        sys.exit(selftest(bl, app_size=prof.app_size if prof else None))
 
     bl = BootLoader(a.port, a.baud, a.pace, a.conn)
     try:
@@ -711,8 +970,20 @@ def main():
                   f"erase: {st_name(r['data'][0])} 耗时={time.time() - t0:.2f}s")
         elif a.command == "upgrade":
             if not a.arg:
-                sys.exit("用法：upgrade <镜像文件> [--key <pem>]")
-            sys.exit(cmd_upgrade(bl, a.arg, key_path=a.key))
+                sys.exit("用法：upgrade <镜像文件> [--key <pem>] [--chip <id|auto>]")
+            prof, why = _resolve_chip(a, bl, profiles)
+            if why:
+                print(why)
+            if prof is not None:
+                import bl_chip
+                chk = bl_chip.check_image(a.arg, prof, force=a.force_image)
+                print(f"镜像体检（{prof.id}）：{'通过' if chk.ok else '不通过'}——{chk.msg}")
+                if not chk.ok:
+                    sys.exit(f"[X] 镜像体检不通过（应急可用 --force-image 跳过）：{chk.msg}")
+            elif a.chip:
+                sys.exit(1)      # --chip 解析失败：不降级成「按 F103 46K 盲烧」
+            sys.exit(cmd_upgrade(bl, a.arg, key_path=a.key,
+                                 app_size=prof.app_size if prof else None))
         elif a.command == "verify":
             if not a.arg or not a.arg2:
                 sys.exit("用法：verify <size> <crc32_hex>")
