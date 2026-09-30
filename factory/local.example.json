@@ -1,0 +1,13 @@
+{
+  "_note": "工厂模式本地配置**示例**：复制为 factory/local.json（工具旁，不入库）后按需修改；命令行也可用 --config <任意路径> 指过去，GUI 默认读写 ~/.litebootupgrader_factory.json。四段都可以省略。",
+  "chips": [],
+  "_note_chips": "可选：覆盖或补充芯片档案，条目 schema 与固件仓 chips/<id>.json 完全一致（见该文件）。本段优先级高于固件仓与内置包——注意覆盖等于把几何钉死在这里，固件仓改分区后必须同步改本段（`bl_upgrade.py chips list` 会打印每片档案的来源，几何不一致会提示）。常规情况留空即可。",
+  "images": {
+    "f103c8t6": "factory/images/f103c8t6/app.bin",
+    "f411ceu6": "D:/firmware/release/f411ceu6/app.bin"
+  },
+  "_note_images": "按芯片 id 指定预设镜像（工厂模式按探查出的芯片取镜像；没配的芯片会停下并提示，不会猜）。路径可用相对（相对当前工作目录）或绝对。留空时 GUI 会回退到固件仓的示例镜像 app/examples/<chip>_app/app.bin（表格里可见）。",
+  "records": "factory/records/records.csv",
+  "jsonl": null,
+  "_note_records": "结果落盘路径（CSV 追加写，utf-8-sig 便于 Excel 直接打开；jsonl 非 null 时另写一份机器可读记录）。断点续烧按 CSV 里 result=OK 的 UID 跳过。"
+}

@@ -21,3 +21,9 @@ bl_sign_pubkey_local.h
 
 # ---- 评审过程记录（本地保留，不入库） ----
 docs/review/
+
+# ---- 工厂模式本地数据（工具旁，不入库；示例见 factory/local.example.json） ----
+# 产线配置（镜像预设/记录路径/芯片覆盖）、结果记录、量产镜像按约定不入库
+factory/local.json
+factory/records/
+factory/images/**/*.bin

@@ -1,0 +1,99 @@
+{
+  "_note": "内置芯片档案包（生成物，勿手改）：由 `chips sync` 从固件仓 chips/*.json 抽取上位机所需字段生成。运行时搜索顺序见 bl_chip.py 模块说明；本文件保证打包 exe 无固件仓时仍可工作。",
+  "chips": [
+    {
+      "id": "f103c8t6",
+      "family": "stm32f1",
+      "device": {
+        "name": "STM32F103C8",
+        "pack_id": "Keil.STM32F1xx_DFP.2.4.1",
+        "cputype": "Cortex-M3"
+      },
+      "memory": {
+        "flash_base": "0x08000000",
+        "flash_size": "0x00010000",
+        "sram_base": "0x20000000",
+        "sram_size": "0x00005000"
+      },
+      "partitions": {
+        "bootloader": {
+          "base": "0x08000000",
+          "size": "0x4000"
+        },
+        "app": {
+          "base": "0x08004000",
+          "size": "0xb800"
+        }
+      },
+      "erase_units": {
+        "uniform": true,
+        "base": "0x08000000",
+        "unit_size": "0x400",
+        "count": 64,
+        "typical_erase_ms": 4
+      },
+      "sysmem": {
+        "uid_addr": "0x1ffff7e8",
+        "flsize_addr": "0x1ffff7e0"
+      },
+      "build": {
+        "app_example_dir": "app\\examples\\f103c8t6_app"
+      },
+      "pyocd_target": "stm32f103c8"
+    },
+    {
+      "id": "f411ceu6",
+      "family": "stm32f4",
+      "device": {
+        "name": "STM32F411CE",
+        "pack_id": "Keil.STM32F4xx_DFP.3.1.1",
+        "cputype": "Cortex-M4"
+      },
+      "memory": {
+        "flash_base": "0x08000000",
+        "flash_size": "0x00080000",
+        "sram_base": "0x20000000",
+        "sram_size": "0x00020000"
+      },
+      "partitions": {
+        "bootloader": {
+          "base": "0x08000000",
+          "size": "0x8000"
+        },
+        "app": {
+          "base": "0x08010000",
+          "size": "0x70000"
+        }
+      },
+      "erase_units": {
+        "uniform": false,
+        "base": "0x08000000",
+        "units": [
+          {
+            "size": "0x4000",
+            "count": 4,
+            "typical_erase_ms": 230
+          },
+          {
+            "size": "0x10000",
+            "count": 1,
+            "typical_erase_ms": 490
+          },
+          {
+            "size": "0x20000",
+            "count": 3,
+            "typical_erase_ms": 875
+          }
+        ]
+      },
+      "sysmem": {
+        "uid_addr": "0x1fff7a10",
+        "flsize_addr": "0x1fff7a22"
+      },
+      "build": {
+        "app_example_dir": "app\\examples\\f411ceu6_app"
+      },
+      "pyocd_target": "stm32f411ce"
+    }
+  ]
+}
