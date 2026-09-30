@@ -19,9 +19,12 @@ CPU 骤停而 Flash 内容保持，等效于写入中途掉电（bl_metadata.c w
 
 用法（pyocd 与 pyserial 同环境隔离运行）：
   uv run --python 3.12 --with pyserial --with pyocd \
-      tools/python/bl_powerloss_drill.py --port COM4 --rounds 10
+      bl_powerloss_drill.py --port COM4 --rounds 10
+  # 非 F103 芯片：--chip <档案 id> 自动带出 pyocd 目标名与 Keil pack 路径；
+  # F411 例：--chip f411ceu6 [--pack-root E:/Hardware/Keil/Arm/Packs/Keil]
 """
 import argparse
+import os
 import random
 import struct
 import subprocess
@@ -29,14 +32,36 @@ import sys
 import threading
 import time
 
+import bl_chip
 import bl_upgrade as blp
 
-# pyocd 注入命令：全部字面常量，不接收任何外部输入（安全约束）
+# pyocd 注入命令：argv 列表 + shell=False，不经过 shell（无解释、无注入面）。
+# 默认 F103（本仓参考支持包）；--chip 按档案改写 target/pack，--pyocd-target/--pack 可显式覆盖。
 PYOCD_CMD = ["uv", "run", "--python", "3.12", "--with", "pyocd", "pyocd",
              "reset", "-t", "stm32f103c8",
              "--pack", "E:/Hardware/Keil/Arm/Packs/Keil/STM32F1xx_DFP/2.4.1"]
+PACK_ROOT_DEFAULT = "E:/Hardware/Keil/Arm/Packs/Keil"
 BURST_DEFAULT = 150          # 每轮 SET_META 条数（约 4~6 s 风暴，覆盖 pyocd 连接耗时）
 SR = random.SystemRandom()   # 复位延时用密码学安全随机源
+
+
+def pack_path_for(pack_id: str, root: str = PACK_ROOT_DEFAULT) -> str | None:
+    """chip.json 的 pack_id（如 Keil.STM32F1xx_DFP.2.4.1）→ 本地 pack 目录
+    <root>/<name>/<version>（Keil 官方 pack 落盘布局）；目录不存在返回 None
+    （pyocd 多数目标可退回内建支持，只是部分老器件需要 pack 补全）。"""
+    parts = (pack_id or "").split(".")
+    if len(parts) < 3:
+        return None
+    cand = os.path.join(root, parts[1], ".".join(parts[2:]))
+    return cand if os.path.isdir(cand) else None
+
+
+def pyocd_cmd_for(target: str, pack: str | None) -> list:
+    cmd = ["uv", "run", "--python", "3.12", "--with", "pyocd", "pyocd",
+           "reset", "-t", target]
+    if pack:
+        cmd += ["--pack", pack]
+    return cmd
 
 
 def pyocd_reset() -> bool:
@@ -147,7 +172,30 @@ def main():
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--rounds", type=int, default=10)
     ap.add_argument("--burst", type=int, default=BURST_DEFAULT)
+    ap.add_argument("--chip", help="芯片档案 id（如 f411ceu6）：按档案取 pyocd 目标名与 pack，"
+                                  "缺省 F103")
+    ap.add_argument("--pyocd-target", help="显式指定 pyocd 目标名（覆盖 --chip 推导）")
+    ap.add_argument("--pack", help="显式指定 Keil pack 目录（覆盖 --chip 推导）")
+    ap.add_argument("--pack-root", default=PACK_ROOT_DEFAULT,
+                    help=f"Keil pack 根目录（默认 {PACK_ROOT_DEFAULT}）")
     a = ap.parse_args()
+
+    global PYOCD_CMD
+    target, pack = "stm32f103c8", None
+    if a.chip:
+        try:
+            prof = bl_chip.load_profiles().get(a.chip)
+        except bl_chip.ChipError as e:
+            sys.exit(f"[X] 芯片档案加载失败：{e}")
+        if prof is None:
+            sys.exit(f"[X] 未知芯片 id：{a.chip}（跑 `bl_upgrade.py chips list` 看可用档案）")
+        target = prof.pyocd_target or target
+        pack = pack_path_for(prof.pack_id, a.pack_root)
+        if pack is None:
+            print(f"[!] 未在本机找到 {prof.pack_id} 的 pack 目录（{a.pack_root}），"
+                  f"回退 pyocd 内建目标支持；必要时用 --pack 显式指定")
+    PYOCD_CMD = pyocd_cmd_for(a.pyocd_target or target, a.pack or pack)
+    print(f"    pyocd 复位注入：{' '.join(PYOCD_CMD)}")
 
     bl = blp.BootLoader(a.port, a.baud)
     print(f"== 参数区写入中断恢复钻具：{a.rounds} 轮 × {a.burst} 条写风暴 ==")
