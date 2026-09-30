@@ -5,7 +5,9 @@
 与本仓 bl_upgrade.py 同目录放置，直接 import，不做任何路径回溯。
 运行：
   uv run --python 3.12 --with pyserial python test_host_protocol.py
-  （或已装 pyserial 的任意 python 直接运行）
+  签名用例（1.4.0）需 cryptography，推荐统一：
+  uv run --python 3.12 --with pyserial --with cryptography python test_host_protocol.py
+  （或已装依赖的任意 python 直接运行；缺 cryptography 时签名用例自动跳过）
 
 覆盖：
   1. CRC16/MODBUS 已知答案（KAT）
@@ -177,7 +179,8 @@ def t_misc():
           zlib.crc32(img) & 0xFFFFFFFF == zlib.crc32(b"\x01\x02\x03\xFF") & 0xFFFFFFFF)
     check("命令表齐全", set(blp.CMD) == {"ping", "info", "erase", "write", "verify",
                                         "set_meta", "get_meta", "jump", "reset",
-                                        "ota"})
+                                        "ota", "verify_signed"})
+    check("状态码表含 SIGN_ERROR", blp.STATUS.get(0x06) == "SIGN_ERROR")
 
 
 def t_parse_ota():
@@ -199,6 +202,70 @@ def t_parse_ota():
     f = blp.build_frame(0x10, 0x01)
     check("OTA_QUERY 帧与 §7.5 实测模板一致",
           f == bytes.fromhex("AA5501100100004CC055AA"), f.hex().upper())
+
+
+def _have_crypto() -> bool:
+    try:
+        import cryptography  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def t_signing():
+    """1.4.0（ADR-020）：keygen / sign_image_bytes / 0x11 帧构造。
+    cryptography 缺失时自动跳过（非签名路径零依赖）。"""
+    if not _have_crypto():
+        check("签名用例（cryptography 缺失，跳过）", True)
+        return
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as td:
+        pem = str(Path(td) / "sign_test_key.pem")
+        header = str(Path(td) / "bl_sign_pubkey_local.h")
+        rc = blp.cmd_keygen(pem, header)
+        check("keygen 退出码 0", rc == 0)
+        pem_text = Path(pem).read_text(encoding="utf-8")
+        check("keygen 私钥 PEM 落盘", "BEGIN PRIVATE KEY" in pem_text)
+        h = Path(header).read_text(encoding="utf-8")
+        check("keygen 公钥头格式",
+              "#define BL_SIGN_PUBKEY_BYTES \\" in h
+              and h.count(", \\") == 7 and h.count("0x") == 64)
+        # 签名→公钥回验：合法镜像过、篡改镜像不过（与固件 uECC 验签同构）
+        img = bytes(range(256)) * 4 + b"\xFF" * 4            # 1 KiB 任意内容 + 填充
+        sig = blp.sign_image_bytes(img, pem)
+        check("签名长度 64B", len(sig) == 64)
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.asymmetric.utils import \
+            encode_dss_signature
+        key = serialization.load_pem_private_key(Path(pem).read_bytes(), password=None)
+        pub = key.public_key()
+        good = bad = None
+
+        def _verify_raw(sig_raw: bytes, data: bytes) -> bool:
+            # cryptography 的 verify 只收 DER：把裸 r‖s 大端重编回 DER——
+            # 恰好完整验证「DER 签名 → 裸 64B → 回验」往返（固件消费裸 64B）
+            r = int.from_bytes(sig_raw[:32], "big")
+            s = int.from_bytes(sig_raw[32:], "big")
+            try:
+                pub.verify(encode_dss_signature(r, s), data, ec.ECDSA(hashes.SHA256()))
+                return True
+            except Exception:
+                return False
+
+        good = _verify_raw(sig, img)
+        bad = _verify_raw(sig, img[:-1] + bytes([img[-1] ^ 0xFF]))
+        check("签名对原镜像可回验", good is True)
+        check("篡改 1 字节后签名失效", bad is False)
+        # 0x11 帧结构：LEN=72、CMD=0x11、CRC 可自校验（protocol.md §5.11）
+        frame = blp.build_frame(blp.CMD["verify_signed"], 0x21,
+                                struct.pack("<II", len(img), 0xDEADBEEF) + sig)
+        check("VERIFY_SIGNED 帧长 83B/LEN=72",
+              len(frame) == 83 and frame[5] == 72 and frame[3] == 0x11)
+        check("VERIFY_SIGNED 帧 CRC 自洽",
+              blp.crc16_modbus(frame[2:-4]) == frame[-4] | (frame[-3] << 8))
 
 
 def t_cli():
@@ -232,6 +299,20 @@ def t_cli():
     except SystemExit:
         ok = False
     check("CLI ota 子命令与 --conn bt 可解析", ok)
+    # 1.4.0：keygen 子命令与 upgrade --key 解析
+    try:
+        ns = ap.parse_args(["keygen", "--out-key", "k.pem",
+                            "--out-header", "bl_sign_pubkey_local.h"])
+        ok = ns.command == "keygen" and ns.out_key == "k.pem"
+    except SystemExit:
+        ok = False
+    check("CLI keygen 子命令与 --out-key/--out-header 可解析", ok)
+    try:
+        ns = ap.parse_args(["upgrade", "x.bin", "--key", "sign_test_key.pem"])
+        ok = ns.command == "upgrade" and ns.key == "sign_test_key.pem"
+    except SystemExit:
+        ok = False
+    check("CLI upgrade --key 可解析", ok)
     try:
         with contextlib.redirect_stderr(io.StringIO()):
             ap.parse_args(["ping", "--conn", "wifi"])
@@ -277,6 +358,7 @@ def main():
     t_parse_ota()
     t_cmd_seq()
     t_misc()
+    t_signing()
     t_cli()
     t_gui_state()
     n = sum(RESULTS)

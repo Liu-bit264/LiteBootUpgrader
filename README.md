@@ -60,7 +60,8 @@ uv run --python 3.12 --with pyserial bl_upgrade.py selftest --port COM4
 
 | 子命令 | 作用 |
 |---|---|
-| `upgrade <bin>` | 一键升级（ensure_bl → 擦除 → 分块写入 → 校验） |
+| `upgrade <bin>` | 一键升级（ensure_bl → 擦除 → 分块写入 → 校验；`--key <pem>` 启用签名校验） |
+| `keygen` | 生成 P-256 测试密钥对（私钥 PEM + 公钥本地头；密钥任何形态不入库） |
 | `ota` | OTA 状态查询（BL/APP 版本、APP 有效性、到达通道、蓝牙连接） |
 | `selftest` | 15 步升级流程硬件在环自检 |
 | `ping / info / meta` | 握手 / BL 信息与遥测 / 参数区元数据 |
@@ -73,13 +74,30 @@ uv run --python 3.12 --with pyserial bl_upgrade.py selftest --port COM4
 打开失败自动重试）。运行 `bl_upgrade.py -h`（`--help`）查看全部子命令与参数；
 `--version` 输出版本号。
 
+### 签名验签升级（1.4.0 起，配套固件 BL 0.4.0 ADR-020）
+
+```bash
+# 1) 生成测试密钥对（私钥 PEM 本地保管；公钥头写入固件仓芯片端口目录，须在 .gitignore）
+uv run --python 3.12 --with pyserial --with cryptography bl_upgrade.py keygen \
+    --out-key sign_test_key.pem \
+    --out-header ../LiteBootLoader/port/stm32f4/f411ceu6/bl_sign_pubkey_local.h
+# 2) 固件侧 BL_SIGN_EN=1 重建（编译日志出现签名启用警告行属预期）
+# 3) 签名升级：写块完成后改发 0x11 VERIFY_SIGNED，auth 置位方可跳转
+uv run --python 3.12 --with pyserial --with cryptography bl_upgrade.py \
+    upgrade app.bin --port COM4 --key sign_test_key.pem
+```
+
+篡改镜像任意字节 → 固件回 `SIGN_ERROR`、不持久化、拒绝跳转；不带 `--key` 走 legacy
+VERIFY 的镜像在启用签名的固件上 auth=0 同样不可跳转。防物理/调试口攻击与回滚不在
+范围（ADR-020 威胁模型）。
+
 ### GUI 与 CLI 能力矩阵
 
 | 界面 | 覆盖能力 |
 |---|---|
 | GUI 基础模式（默认） | 一键升级、跳转 APP、复位、PING + 串口枚举/刷新、连接类型（有线/蓝牙）、镜像 CRC32 预览、进度条/日志窗 |
-| GUI 高级模式（勾选确认后重启进入） | 在基础模式之上增加 CLI 全量 9 个调试/诊断操作（info / meta / ota / erase / verify / selftest / listen / raw / setmeta）与波特率、pace 参数——**与 CLI 功能同步** |
-| CLI | 13 个子命令全量 + `-h/--help`、`--version`、`--conn` |
+| GUI 高级模式（勾选确认后重启进入） | 在基础模式之上增加 CLI 全量 10 个调试/诊断操作（info / meta / ota / erase / verify / selftest / listen / raw / setmeta / **keygen**）与波特率、pace 参数，升级支持签名私钥（可选）——**与 CLI 功能同步** |
+| CLI | 14 个子命令全量 + `-h/--help`、`--version`、`--conn`、`--key` |
 
 ### 重试与超时（对应 LiteBootLoader 仓库 docs/protocol.md §6）
 
@@ -127,7 +145,7 @@ uv run --python 3.12 --with pyserial --with pyinstaller \
 
 ## 版本与许可
 
-当前版本 **v1.3.1**，历史与变更明细见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 **v1.4.0**，历史与变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
 [MIT](LICENSE) © 2026 Qingc。LiteBootLoader 亦采用 MIT 许可证（捆绑的 third_party/CMSIS
 保留其原始许可，见其 LICENSES.md）。

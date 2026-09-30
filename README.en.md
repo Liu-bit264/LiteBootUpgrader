@@ -70,7 +70,8 @@ restarts back. The mode is stored in `~/.litebootupgrader_gui.json`:
 
 | Subcommand | Purpose |
 |---|---|
-| `upgrade <bin>` | One-click upgrade (ensure_bl → erase → chunked write → verify) |
+| `upgrade <bin>` | One-click upgrade (ensure_bl → erase → chunked write → verify; `--key <pem>` enables signed verification) |
+| `keygen` | Generate a P-256 test keypair (private-key PEM + public-key local header; no key material ever enters git) |
 | `ota` | OTA status query (BL/APP versions, APP validity, arrival channel, Bluetooth link) |
 | `selftest` | 15-step hardware-in-the-loop upgrade self-test |
 | `ping / info / meta` | Handshake / BL info & telemetry / parameter-area metadata |
@@ -84,13 +85,32 @@ experiments), `--conn serial|bt` (connection type; bt = Bluetooth SPP with autom
 open retry). Run `bl_upgrade.py -h` (`--help`) to list all subcommands and options;
 `--version` prints the version.
 
+### Signed verification (1.4.0+, pairs with firmware BL 0.4.0 / ADR-020)
+
+```bash
+# 1) generate a test keypair (keep the PEM local; header goes into the firmware
+#    repo's chip port dir and must be gitignored)
+uv run --python 3.12 --with pyserial --with cryptography bl_upgrade.py keygen \
+    --out-key sign_test_key.pem \
+    --out-header ../LiteBootLoader/port/stm32f4/f411ceu6/bl_sign_pubkey_local.h
+# 2) rebuild the firmware with BL_SIGN_EN=1 (the enable warning in the build log is expected)
+# 3) signed upgrade: sends 0x11 VERIFY_SIGNED after the chunks; auth must be set to jump
+uv run --python 3.12 --with pyserial --with cryptography bl_upgrade.py \
+    upgrade app.bin --port COM4 --key sign_test_key.pem
+```
+
+Flipping any byte of the image makes the firmware answer `SIGN_ERROR` without persisting
+(no jump); images upgraded via legacy VERIFY carry auth=0 and cannot jump on
+sign-enabled firmware either. Physical/debug-port attacks and rollback are out of scope
+(ADR-020 threat model).
+
 ### GUI vs CLI Capability Matrix
 
 | Interface | Coverage |
 |---|---|
 | GUI basic mode (default) | One-click upgrade, jump to APP, reset, PING + serial enumeration/refresh, connection type (wired/Bluetooth), image CRC32 preview, progress bar/log pane |
-| GUI advanced mode (tick, confirm, UI restart) | On top of basic mode: all 9 CLI debug/diagnostic operations (info / meta / ota / erase / verify / selftest / listen / raw / setmeta) plus baud-rate and pace options — **feature parity with the CLI** |
-| CLI | All 13 subcommands + `-h/--help`, `--version`, `--conn` |
+| GUI advanced mode (tick, confirm, UI restart) | On top of basic mode: all 10 CLI debug/diagnostic operations (info / meta / ota / erase / verify / selftest / listen / raw / setmeta / **keygen**) plus baud-rate and pace options, and an optional signing key for upgrades — **feature parity with the CLI** |
+| CLI | All 14 subcommands + `-h/--help`, `--version`, `--conn`, `--key` |
 
 ### Retry & Timeout (mirrors the firmware repo's docs/protocol.md §6)
 
@@ -140,7 +160,7 @@ Artifacts land in `dist\` (`build/` and `*.spec` are intermediates, not committe
 
 ## Version & License
 
-Current version **v1.3.1**; history and change details in [CHANGELOG.md](CHANGELOG.md).
+Current version **v1.4.0**; history and change details in [CHANGELOG.md](CHANGELOG.md).
 
 [MIT](LICENSE) © 2026 Qingc. LiteBootLoader is also MIT-licensed (its bundled
 third_party/CMSIS retains its original license, see its LICENSES.md).

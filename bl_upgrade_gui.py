@@ -23,6 +23,7 @@ selftest 的 print 经 redirect_stdout 桥接进日志队列（busy 互斥保证
 同一时刻仅一个工作线程在跑，stdout 重换向不串扰）。
 """
 import contextlib
+import io
 import json
 import os
 import queue
@@ -101,6 +102,7 @@ class App:
         self.lock_btns = []
         self.baud_var = tk.StringVar(value=str(DEFAULT_BAUD))
         self.pace_var = tk.StringVar(value="0")
+        self.key_var = tk.StringVar()   # 签名私钥 PEM（可选，ADR-020）
         self.cur_baud = DEFAULT_BAUD   # 主线程 start() 时取好，工作线程只读纯值
         self.cur_pace = 0
 
@@ -197,6 +199,15 @@ class App:
         for b in (b_info, b_meta, b_ota, b_erase, b_selftest):
             b.pack(side="left", padx=4, pady=2)
         self.lock_btns += [b_info, b_meta, b_ota, b_erase, b_selftest]
+
+        rsign = ttk.Frame(adv)
+        rsign.pack(fill="x", padx=4, pady=2)
+        ttk.Label(rsign, text="签名私钥（可选）").pack(side="left", padx=(4, 2))
+        ttk.Entry(rsign, textvariable=self.key_var, width=36).pack(side="left")
+        ttk.Button(rsign, text="浏览…", command=self.browse_key).pack(side="left", padx=2)
+        ttk.Button(rsign, text="生成密钥对", command=self.do_keygen).pack(side="left", padx=6)
+        ttk.Label(rsign, text="留空 = legacy VERIFY；填私钥 = VERIFY_SIGNED（固件需 BL_SIGN_EN=1）",
+                  foreground="#888").pack(side="left", padx=6)
 
         r2 = ttk.Frame(adv)
         r2.pack(fill="x", padx=4, pady=2)
@@ -329,6 +340,36 @@ class App:
             return False
         return True
 
+    def browse_key(self):
+        p = filedialog.askopenfilename(title="选择 ECDSA P-256 私钥 PEM",
+                                       filetypes=[("PEM", "*.pem"), ("全部", "*.*")])
+        if p:
+            self.key_var.set(os.path.normpath(p))
+
+    def do_keygen(self):
+        pem = filedialog.asksaveasfilename(
+            title="保存私钥 PEM（本地妥善保管，任何形态不入库）",
+            defaultextension=".pem", initialfile="sign_test_key.pem")
+        if not pem:
+            return
+        header = filedialog.asksaveasfilename(
+            title="保存公钥本地头（写入固件仓芯片端口目录，须在 .gitignore）",
+            defaultextension=".h", initialfile="bl_sign_pubkey_local.h")
+        if not header:
+            return
+
+        def _work():
+            try:
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    rc = blp.cmd_keygen(pem, header)
+                self._logcb(buf.getvalue().rstrip())
+                self.q.put(("done", rc))
+            except SystemExit as e:      # cmd_keygen 缺 cryptography 走 sys.exit
+                self._logcb(str(e))
+                self.q.put(("done", 1))
+        self.start(_work)
+
     def do_upgrade(self):
         if not self._check_ready():
             return
@@ -435,7 +476,8 @@ class App:
             bl = self._open_and_close(port)
             try:
                 rc = blp.run_upgrade(bl, path, log=self._logcb,
-                                     progress=self._progresscb)
+                                     progress=self._progresscb,
+                                     key_path=self.key_var.get().strip() or None)
             finally:
                 bl.s.close()
             self.q.put(("done", rc))
