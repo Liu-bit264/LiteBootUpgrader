@@ -25,7 +25,7 @@ LiteBootUpgrader/
 ├── bl_chip_profiles.json  内置芯片档案包（生成物，`chips sync` 从固件仓重建，勿手改）
 ├── bl_upgrade_gui.py      tkinter 图形界面（基础 / 高级 / 工厂三种形态，后两者可同时开启）
 ├── bl_powerloss_drill.py  验收 #9 参数区写入中断恢复钻具（`--chip` 取 pyocd 目标/pack）
-├── test_host_protocol.py  主机侧无硬件单测（122 项，纯脚本自计数）
+├── test_host_protocol.py  主机侧无硬件单测（136 项，纯脚本自计数）
 ├── factory/
 │   └── local.example.json 工厂本地配置示例（复制为 local.json；实际配置与记录不入库）
 ├── bl_upgrade_gui.bat     GUI 双击启动器
@@ -44,9 +44,10 @@ LiteBootUpgrader/
 ## 测试与验收
 
 ```bash
-# 主机侧单测（无需硬件，122 项：CRC KAT/帧模板/解析器（含结构化 GET_INFO）/响应解析含 OTA/
+# 主机侧单测（无需硬件，136 项：CRC KAT/帧模板/解析器（含结构化 GET_INFO）/响应解析含 OTA/
 # SEQ 与 CMD 错位丢弃/芯片档案与几何自检/探查四种结局/镜像体检/升级上限与停止不落字节/
-# 批量引擎全流程与落盘续烧/钻具参数化/CLI 参数面/GUI 模式矩阵与版式/状态持久化）
+# 批量引擎全流程与落盘续烧/多端口并行（假串口双口、共享记录单表头、停止广播）/钻具参数化/
+# CLI 参数面/GUI 模式矩阵与版式（含小屏滚动替代裁剪）/状态持久化）
 uv run --python 3.12 --with pyserial python test_host_protocol.py
 
 # 硬件在环：15 步升级流程自检（板子在线时；非 F103 芯片加 --chip <id> 取对分区）
@@ -57,6 +58,11 @@ uv run --python 3.12 --with pyserial bl_upgrade.py chips detect --port COM4
 uv run --python 3.12 --with pyserial bl_upgrade.py factory --port COM4 --chip auto \
     --image f103c8t6=../LiteBootLoader/app/examples/f103c8t6_app/app.bin \
     --count 1 --auto-jump --records factory/records/records.csv --yes
+
+# 多端口并行（一台机器插多个串口时；每口一个独立会话，停止广播到所有口）
+uv run --python 3.12 --with pyserial bl_upgrade.py factory --ports COM4,COM5,COM6 \
+    --chip auto --count 6 --skip-uptodate --auto-jump \
+    --records factory/records/records.csv --yes
 
 # 验收 #9 钻具：写入风暴 + 复位注入（需板子 + 调试器；--chip 选 pyocd 目标与 pack）
 uv run --python 3.12 --with pyserial --with pyocd bl_powerloss_drill.py --port COM4 --rounds 10

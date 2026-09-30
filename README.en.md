@@ -70,8 +70,9 @@ detected chip, flashes units back to back and records every result for traceabil
 
 The two mode switches are **independent and can be enabled together** (ticking one never
 drags the other in; you can still enter advanced mode while factory mode is on, and vice
-versa). With both on, all four panels are present and the UI widens while shrinking the
-tables/log rows to fit:
+versa). With both on, all four panels are present: the window shrinks to fit the screen
+(no hardcoded height), the panel area scrolls with the mouse wheel when it does not fit,
+and the log pane and status line stay pinned at the bottom:
 
 ![GUI factory + advanced mode](docs/gui_factory_adv.png)
 
@@ -87,8 +88,10 @@ tables/log rows to fit:
 - **Advanced panel (advanced mode only)**: INFO / META / OTA query / ERASE (double
   confirmation) / SELFTEST / VERIFY / LISTEN / RAW / SETMETA, plus baud-rate and
   pace(ms) options — behavior aligned one-to-one with the CLI;
-- **Factory panel (factory mode only)**: chip & preset-image table, batch options and
-  counters, device result table; start/stop share the `busy` mutex so factory and
+- **Factory panel (factory mode only)**: chip & preset-image table, batch options, device
+  result table plus a **right-hand status column** (headline state / progress bar /
+  OK·SKIP·FAIL·pass rate / per-port state); ports are **multi-select** (N ports = N
+  parallel sessions); start/stop share the `busy` mutex so factory and
   advanced operations never fight over the serial port;
 - **Serial exclusivity**: close VOFA+ / other serial monitors first (a COM port is exclusive).
 
@@ -153,6 +156,26 @@ Production-line batch flashing: **plug a board in and it flashes, the preset ima
 picked by the detected chip, every result is recorded for traceability**. The GUI
 (tick "factory mode") and the CLI (`factory` subcommand) are two front ends over one engine.
 
+### Parallel ports (many serial adapters on one machine)
+
+In factory mode the port box is a **multi-select list**: one port selected = a single
+batch; N selected = N **independent sessions flashing in parallel** (multi-rig /
+multi-adapter setups). The ports never affect each other — a port that will not open only
+drops that port (reason logged, the rest keep going); only configuration-level problems
+(e.g. a detected chip with no preset image) halt the whole batch. Points to know:
+
+- **Stop** is broadcast to every port (soft stop = each port finishes its current unit;
+  press again = immediate stop);
+- the **unit cap** is counted across the **session** (not once per port); reaching it
+  broadcasts a soft stop, so the units already in flight finish — at most
+  "ports − 1" units over the cap;
+- the **record file** is written by all threads (internally locked): one header only,
+  rows distinguished by port;
+- the **status column** shows each port's state, with the aggregate headline above it;
+- if no port opens at all, that is reported as an environment error (CLI exits non-zero)
+  rather than "batch finished, 0 units";
+- CLI equivalent: `--ports COM4,COM5` (omit it to use the single `--port`).
+
 ### Configuration: profiles, preset images, records
 
 - **Chip profiles** are merged in order (first wins, later sources fill gaps; `chips list`
@@ -202,7 +225,11 @@ recorded for traceability.
 | Mode | Rig it fits | "Next board" detection |
 |---|---|---|
 | Same-port polling (default) | One USB adapter shared by all boards; the COM port stays; you swap boards | PING answers and the **UID changes**; or a disconnect (two consecutive misses) followed by a reappearance |
-| New port appears | One adapter per board / on-board CDC; plugging a board creates a new COM port | Port-set diffing; `--port` acts as a **whitelist** and other new ports are ignored (prevents flashing an unrelated CDC device) |
+| New port appears | One adapter per board / on-board CDC; plugging a board creates a new COM port | Port-set diffing; the selected ports act as a **whitelist** and other new ports are ignored (prevents flashing an unrelated serial device) |
+
+With several ports selected, each port applies the table above on its own (under same-port
+polling every port watches its own board; under "new port appears" the whitelist is the set
+of selected ports).
 
 ### Skipping and resume
 
@@ -237,19 +264,29 @@ uv run --python 3.12 --with pyserial bl_upgrade.py factory \
     --image f103c8t6=../LiteBootLoader/app/examples/f103c8t6_app/app.bin \
     --count 5 --skip-uptodate --auto-jump --records factory/records/records.csv --yes
 
-# One adapter per board: start as soon as a new port appears (--port is the whitelist)
+# One adapter per board: start as soon as a new port appears (selected ports are the whitelist)
 uv run --python 3.12 --with pyserial bl_upgrade.py factory \
     --port COM7 --trigger newport --resume \
     --image f411ceu6=D:/release/f411ceu6_app.bin --yes
+
+# Many adapters on one machine: three ports flashing in parallel (one session each,
+# stop is broadcast to all of them)
+uv run --python 3.12 --with pyserial bl_upgrade.py factory \
+    --ports COM4,COM5,COM6 --chip auto --count 30 \
+    --image f103c8t6=D:/release/f103c8t6_app.bin \
+    --skip-uptodate --auto-jump --records factory/records/records.csv --yes
 ```
 
-> Validation status: 122 host-side unit checks pass (mode matrix, probe disambiguation,
-> image health check, batch state machine, records/resume/stop); **verified on an actual
-> STM32F103C8T6** — detection hits, single-unit batch flash (~3.5 s per unit, CRC verified
-> + jump to APP), skip-if-current (real matching CRC32), resume (real UID) and immediate
-> stop mid-upgrade (unit marked failed, device reports `app_valid=0` and refuses to run an
-> incomplete APP). **The F411CEU6 board run has not been done** (no board available); its
-> profile and the `--chip` path are covered by host-side tests only.
+> Validation status: 136 host-side unit checks pass (mode matrix and layout, probe
+> disambiguation, image health check, batch state machine, records/resume/stop,
+> **parallel ports — two fake ports flashing concurrently, one shared CSV header,
+> a dead port not affecting the others, broadcast stop, session-wide cap, all-ports-dead**);
+> **verified on an actual STM32F103C8T6** — detection hits, single-unit batch flash
+> (~3.5 s per unit, CRC verified + jump to APP), skip-if-current (real matching CRC32),
+> resume (real UID) and immediate stop mid-upgrade (unit marked failed, device reports
+> `app_valid=0` and refuses to run an incomplete APP). **The F411CEU6 board run has not
+> been done** (no board available), and **parallel ports have not been exercised on real
+> hardware either** (no multi-adapter rig at hand); both are covered by host-side tests only.
 
 ### GUI vs CLI Capability Matrix
 
@@ -257,7 +294,7 @@ uv run --python 3.12 --with pyserial bl_upgrade.py factory \
 |---|---|
 | GUI basic mode (default) | One-click upgrade, jump to APP, reset, PING + serial enumeration/refresh, connection type (wired/Bluetooth), image CRC32 preview, progress bar/log pane |
 | GUI advanced mode (tick, confirm, UI restart) | On top of basic mode: all 10 CLI debug/diagnostic operations (info / meta / ota / erase / verify / selftest / listen / raw / setmeta / **keygen**) plus baud-rate and pace options, and an optional signing key for upgrades — **feature parity with the CLI** |
-| GUI factory mode (tick, confirm, UI restart) | Chip & preset-image table, batch flashing (trigger mode / auto start / skip-if-current / resume / jump after flash / APP version / signing key / record file), start·stop, live counters and pass rate, device result table — **the same engine as the CLI `factory`**; can be enabled together with advanced mode |
+| GUI factory mode (tick, confirm, UI restart) | Chip & preset-image table, batch flashing (board-swap trigger / skip-if-current / resume / jump after flash / APP version / signing key / record file), start·stop, live counters and pass rate, right-hand status column (per-port state), device result table — **the same engine as the CLI `factory`**; ports are multi-select (N ports = N parallel sessions); can be enabled together with advanced mode |
 | CLI | All 16 subcommands + `-h/--help`, `--version`, `--conn`, `--key`, `--chip`, `--profiles` |
 
 ### Retry & Timeout (mirrors the firmware repo's docs/protocol.md §6)
