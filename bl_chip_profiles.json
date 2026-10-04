@@ -7,7 +7,8 @@
       "device": {
         "name": "STM32F103C8",
         "pack_id": "Keil.STM32F1xx_DFP.2.4.1",
-        "cputype": "Cortex-M3"
+        "cputype": "Cortex-M3",
+        "dev_id": "0x0410"
       },
       "memory": {
         "flash_base": "0x08000000",
@@ -47,7 +48,8 @@
       "device": {
         "name": "STM32F411CE",
         "pack_id": "Keil.STM32F4xx_DFP.3.1.1",
-        "cputype": "Cortex-M4"
+        "cputype": "Cortex-M4",
+        "dev_id": "0x0431"
       },
       "memory": {
         "flash_base": "0x08000000",

@@ -111,6 +111,7 @@ class ChipProfile:
     id: str
     name: str                       # device.name（构建侧器件名，如 STM32F103C8）
     family: str = ""
+    dev_id: int = 0                 # device.dev_id：DBGMCU DEV_ID[11:0]（0 = 档案未声明）
     flash_base: int = 0
     flash_kib: int = 0              # Flash 容量 KiB：GET_INFO 指纹字段口径
     sram_base: int = 0
@@ -142,9 +143,10 @@ class ChipProfile:
         return sum(e["count"] * e["typical_erase_ms"] for e in self.erase_entries)
 
     def describe(self) -> str:
+        dev = f"；DEV_ID {self.dev_id:#06x}" if self.dev_id else "；DEV_ID 未声明"
         return (f"{self.id:<10} {self.name:<12} "
                 f"Flash {self.flash_kib}K @ {self.flash_base:#010x}；"
-                f"APP {self.app_size // 1024}K @ {self.app_base:#010x}")
+                f"APP {self.app_size // 1024}K @ {self.app_base:#010x}{dev}")
 
     def to_chip_dict(self) -> dict:
         """回写为 chips/<id>.json 同构字典（档案包格式，供 chips sync 生成）。"""
@@ -162,7 +164,8 @@ class ChipProfile:
             "id": self.id,
             "family": self.family,
             "device": {"name": self.name, "pack_id": self.pack_id,
-                       "cputype": self.cputype},
+                       "cputype": self.cputype,
+                       "dev_id": f"{self.dev_id:#06x}" if self.dev_id else ""},
             "memory": {"flash_base": f"{self.flash_base:#010x}",
                        "flash_size": f"{self.flash_size:#010x}",
                        "sram_base": f"{self.sram_base:#010x}",
@@ -214,6 +217,7 @@ def profile_from_chip_dict(d: dict, source: str = "") -> ChipProfile:
         id=str(d["id"]),
         name=name,
         family=str(d.get("family") or ""),
+        dev_id=_hex(dev.get("dev_id"), f"{wid}:device.dev_id", 0),
         flash_base=_hex(mem.get("flash_base"), f"{wid}:memory.flash_base"),
         flash_kib=flash_size // 1024,
         sram_base=_hex(mem.get("sram_base"), f"{wid}:memory.sram_base"),
@@ -232,7 +236,6 @@ def profile_from_chip_dict(d: dict, source: str = "") -> ChipProfile:
         source=src,
     )
 
-
 def validate_profile(p: ChipProfile) -> None:
     """几何自检：非法档案直接拒绝加载（宁可报错，不可带病烧录）。"""
     w = p.source or p.id
@@ -246,6 +249,8 @@ def validate_profile(p: ChipProfile) -> None:
                         "（VERIFY 下界，protocol.md §5.5）")
     if p.sram_size <= 0 or p.sram_base <= 0:
         raise ChipError(f"{w}: SRAM 区间非法（base={p.sram_base:#x} size={p.sram_size}）")
+    if p.dev_id and p.dev_id > 0xFFF:
+        raise ChipError(f"{w}: device.dev_id {p.dev_id:#x} 超出 DEV_ID[11:0]（ADR-021）")
     for e in p.erase_entries:
         if e["size"] <= 0 or e["count"] <= 0:
             raise ChipError(f"{w}: 擦除单元表含非正项 {e}")
@@ -437,7 +442,9 @@ def probe_app_boundary(bl, candidates: list, log=print):
 
 def detect_chip(bl, profiles: dict, allow_probe: bool = True, timeout: float = 2.0,
                 log=print) -> DetectResult:
-    """GET_INFO → Flash 容量指纹 → （撞车时）VERIFY 只读边界探查。"""
+    """GET_INFO → **芯片身份（ADR-021，BL ≥ 0.5.0）** → Flash 容量指纹 → （撞车时）VERIFY
+    只读边界探查。身份优先的理由：同容量且同 APP 分区的芯片（F411CE / F407VE 都是 512 KiB
+    且分区几何被扇区表逼成同一套）在容量与探针两条路上都分不开。"""
     r = bl.cmd("info", timeout=timeout)
     if r is None:
         return DetectResult(reason="GET_INFO 无响应（对端可能在跑 APP 或已拔出）")
@@ -447,6 +454,30 @@ def detect_chip(bl, profiles: dict, allow_probe: bool = True, timeout: float = 2
         return DetectResult(reason=f"短响应（{info['raw_len']}B）——对端疑似 APP 而非 BL",
                             info=info, raw=raw)
     flsz = info["flash_kib"]
+    # 路径 1：固件上报的芯片身份（DEV_ID）+ Flash 容量 —— 型号级唯一
+    dev_id = info.get("dev_id")
+    if dev_id:
+        cands = [p for p in profiles.values()
+                 if p.dev_id and p.dev_id == dev_id and p.flash_kib == flsz]
+        if len(cands) == 1:
+            return DetectResult(cands[0], "dev_id",
+                                f"芯片身份 DEV_ID {dev_id:#06x} + Flash {flsz} KiB"
+                                f"（固件上报，ADR-021）", info, raw)
+        if len(cands) > 1:
+            return DetectResult(method="ambiguous",
+                                reason=(f"DEV_ID {dev_id:#06x} 在档案里命中 "
+                                        f"{len(cands)} 片（{', '.join(p.id for p in cands)}）"
+                                        f"——档案 dev_id 声明有误？"),
+                                info=info, raw=raw)
+        if any(p.dev_id for p in profiles.values()):
+            # 档案声明了身份却没有一片对得上：设备不在这套档案里，别退回容量去猜
+            # （旧档案包 dev_id 全空的情形不算——那种包走容量路径是既有行为）
+            return DetectResult(
+                reason=(f"DEV_ID {dev_id:#06x} + Flash {flsz} KiB 与档案不符"
+                        f"（档案已声明身份，无一片匹配）——设备更老/更新，或档案过期"),
+                info=info, raw=raw)
+        log(f"DEV_ID {dev_id:#06x} 无档案可对（本套档案未声明身份），转容量指纹…")
+    # 路径 2：Flash 容量指纹
     cands = [p for p in profiles.values() if p.flash_kib == flsz]
     if not cands:
         return DetectResult(reason=f"Flash {flsz} KiB 无匹配档案（未收录的支持包？）",

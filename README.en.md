@@ -200,22 +200,29 @@ drops that port (reason logged, the rest keep going); only configuration-level p
 
 ### Chip detection
 
-The BL protocol has no chip-id field: `GET_INFO` returns the flash size and a 96-bit UID
-(the UID is a **per-die serial**, not a model), so detection matches the **flash-size
-fingerprint** (F103C8T6 = 64 KiB, F411CEU6 = 512 KiB).
+Detection narrows down in three steps (firmware side: LiteBootLoader ADR-021; the protocol
+field is specified in that repo's `docs/protocol.md` §5.2.1):
 
-When several profiles share a flash size, a **read-only** `VERIFY` boundary probe
-disambiguates: the firmware first checks `size > BL_APP_SIZE` and answers `RANGE_ERROR`,
-only then computes a CRC — so "candidate APP size + a garbage CRC" in one round trip tells
-whether that candidate fits, without writing flash (cost: a 2⁻³² chance the garbage CRC
-matches, which persists metadata once; that device is fully reflashed right after, so it
-is harmless in practice). Use `--no-probe` to skip probing and report the ambiguity instead.
+1. **Chip identity (preferred)**: a BL 0.5.0+ `GET_INFO` carries two extra bytes — the
+   **`DEV_ID`** (`DBGMCU IDCODE[11:0]`: F103C8T6 `0x410`, F411CEU6 `0x431`, …). Combined
+   with the flash size it is **model-level unique**, so even two chips with the same capacity
+   *and* the same APP partition (F411CE / F407VE — both 512 KiB, and the geometry is forced
+   into one shape by their sector table) separate in a single round trip. Shown as
+   `chip=0x0410` in the `info` output.
+2. **Flash-size fingerprint** from `GET_INFO` (F103C8T6 = 64 KiB, F411CEU6 = 512 KiB) —
+   used when the firmware is older than 0.5.0 or the profile pack declares no `dev_id`.
+3. **Read-only `VERIFY` boundary probe** when several profiles share a flash size: the
+   firmware first checks `size > BL_APP_SIZE` and answers `RANGE_ERROR`, only then computes
+   a CRC — so "candidate APP size + a garbage CRC" in one round trip tells whether that
+   candidate fits, without writing flash (cost: a 2⁻³² chance the garbage CRC matches, which
+   persists metadata once; that device is fully reflashed right after, so it is harmless in
+   practice). Use `--no-probe` to skip probing and report the ambiguity instead.
 
-An unknown capacity, or a target that will not enter BL, fails that unit and stops —
-**nothing is flashed blindly**. Known limit: two chips with identical capacity *and*
-partition cannot be told apart by the protocol alone; specify `--chip <id>` by hand (a
-firmware-side chip-id field, or reading `DBGMCU_IDCODE` over the debug port, would be the
-thorough fix — out of scope here).
+An unknown capacity/identity, or a target that will not enter BL, fails that unit and stops —
+**nothing is flashed blindly**. A reported identity that matches nothing in the profiles is a
+hard failure (**no fallback to the capacity guess**, so a stale pack cannot be mistaken for a
+particular chip); only a pack that declares no identities at all falls back to the capacity
+path. `--chip <id>` by hand remains the last resort.
 
 ### Image health check (wrong-image guard)
 
@@ -257,10 +264,11 @@ so the image is rewritten in full).
 
 ### Record fields
 
-One row per unit: index / time / port / chip id / device name / UID / image path / image
-size / CRC32 / SHA-256 / result (OK·SKIP·FAIL) / failure stage / note / elapsed / BL
-version. CSV is appended as `utf-8-sig` (opens straight in Excel); an optional JSONL is
-written for scripts.
+One row per unit: index / time / port / chip id / device name / **chip identity DEV_ID** /
+UID / image path / image size / CRC32 / SHA-256 / result (OK·SKIP·FAIL) / failure stage /
+note / elapsed / BL version (DEV_ID is what the device reports; empty for BL < 0.5.0).
+CSV is appended as `utf-8-sig` (opens straight in Excel); an optional JSONL is written for
+scripts.
 
 ### CLI equivalents
 
